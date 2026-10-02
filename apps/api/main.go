@@ -34,6 +34,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	ctx := context.Background()
 
+	// Connect Build & Break Core to PostgreSQL.
 	db, err := database.Connect(ctx)
 	if err != nil {
 		log.Fatalf("database connection failed: %v", err)
@@ -42,15 +43,34 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
+	// Give the node handlers access to our PostgreSQL connection.
 	nodeHandler := &nodes.Handler{
 		DB: db,
 	}
 
+	// Create the HTTP router.
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /api/v1/health", healthHandler)
-	mux.HandleFunc("GET /api/v1/nodes", nodeHandler.List)
+	// Core health endpoint.
+	mux.HandleFunc(
+		"GET /api/v1/health",
+		healthHandler,
+	)
 
+	// Return all registered Build & Break nodes.
+	mux.HandleFunc(
+		"GET /api/v1/nodes",
+		nodeHandler.List,
+	)
+
+	// Allow a new bnb-agent to enroll using a valid
+	// one-time enrollment token.
+	mux.HandleFunc(
+		"POST /api/v1/nodes/enroll",
+		nodeHandler.Enroll,
+	)
+
+	// Configure the Core HTTP server.
 	server := &http.Server{
 		Addr:         ":8080",
 		Handler:      mux,
