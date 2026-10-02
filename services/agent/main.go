@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"time"
 
+	bnbruntime "buildandbreak/platform/internal/runtime"
+
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
 )
@@ -66,9 +68,13 @@ type AgentConfig struct {
 }
 
 type HeartbeatRequest struct {
-	CPUThreads  int    `json:"cpu_threads"`
-	TotalMemory uint64 `json:"total_memory"`
-	TotalDisk   uint64 `json:"total_disk"`
+	CPUThreads        int    `json:"cpu_threads"`
+	TotalMemory       uint64 `json:"total_memory"`
+	TotalDisk         uint64 `json:"total_disk"`
+	RuntimeAvailable  bool   `json:"runtime_available"`
+	RuntimeName       string `json:"runtime_name"`
+	RuntimeVersion    string `json:"runtime_version"`
+	RuntimeAPIVersion string `json:"runtime_api_version"`
 }
 
 func getSystemInfo() (*SystemInfo, error) {
@@ -246,7 +252,9 @@ func enroll() error {
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
+	responseBody, err := io.ReadAll(
+		io.LimitReader(response.Body, 1024*1024),
+	)
 	if err != nil {
 		return fmt.Errorf("read Core response: %w", err)
 	}
@@ -291,16 +299,32 @@ func enroll() error {
 	return nil
 }
 
-func sendHeartbeat(config *AgentConfig) error {
+func sendHeartbeat(
+	config *AgentConfig,
+	dockerRuntime *bnbruntime.DockerRuntime,
+) error {
 	system, err := getSystemInfo()
 	if err != nil {
 		return err
 	}
 
+	// Check Docker every time we send a heartbeat.
+	//
+	// This means Core doesn't just know that the agent is alive.
+	// It also knows whether the node's container runtime is healthy.
+	runtimeStatus := getRuntimeStatus(
+		context.Background(),
+		dockerRuntime,
+	)
+
 	heartbeat := HeartbeatRequest{
-		CPUThreads:  system.CPUThreads,
-		TotalMemory: system.TotalMemory,
-		TotalDisk:   system.TotalDisk,
+		CPUThreads:        system.CPUThreads,
+		TotalMemory:       system.TotalMemory,
+		TotalDisk:         system.TotalDisk,
+		RuntimeAvailable:  runtimeStatus.Available,
+		RuntimeName:       runtimeStatus.Name,
+		RuntimeVersion:    runtimeStatus.Version,
+		RuntimeAPIVersion: runtimeStatus.APIVersion,
 	}
 
 	body, err := json.Marshal(heartbeat)
@@ -339,7 +363,9 @@ func sendHeartbeat(config *AgentConfig) error {
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
+	responseBody, err := io.ReadAll(
+		io.LimitReader(response.Body, 1024*1024),
+	)
 	if err != nil {
 		return fmt.Errorf("read heartbeat response: %w", err)
 	}
@@ -355,9 +381,13 @@ func sendHeartbeat(config *AgentConfig) error {
 	return nil
 }
 
-func heartbeatLoop(ctx context.Context, config *AgentConfig) {
+func heartbeatLoop(
+	ctx context.Context,
+	config *AgentConfig,
+	dockerRuntime *bnbruntime.DockerRuntime,
+) {
 	send := func() {
-		if err := sendHeartbeat(config); err != nil {
+		if err := sendHeartbeat(config, dockerRuntime); err != nil {
 			log.Printf("Heartbeat failed: %v", err)
 			return
 		}
@@ -365,8 +395,7 @@ func heartbeatLoop(ctx context.Context, config *AgentConfig) {
 		log.Printf("Heartbeat sent successfully")
 	}
 
-	// Send one immediately rather than waiting 30 seconds
-	// after the agent starts.
+	// Send immediately when the agent starts.
 	send()
 
 	ticker := time.NewTicker(30 * time.Second)
@@ -398,10 +427,32 @@ func runAgent() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go heartbeatLoop(ctx, config)
+	// Connect to Docker when the agent starts.
+	//
+	// If Docker isn't available at startup, this node isn't currently
+	// capable of hosting workloads, so the agent refuses to advertise
+	// itself as a healthy hosting node.
+	dockerRuntime, err := createDockerRuntime(ctx)
+	if err != nil {
+		return err
+	}
+	defer dockerRuntime.Close()
+
+	// The heartbeat runs independently of the local HTTP server.
+	// It also performs a fresh Docker health check every 30 seconds.
+	go heartbeatLoop(
+		ctx,
+		config,
+		dockerRuntime,
+	)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", healthHandler)
+
+	// Local-only agent health endpoint.
+	mux.HandleFunc(
+		"GET /health",
+		healthHandler,
+	)
 
 	server := &http.Server{
 		Addr:         "127.0.0.1:9090",
@@ -411,7 +462,9 @@ func runAgent() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Println("Build & Break Agent starting on 127.0.0.1:9090")
+	log.Println(
+		"Build & Break Agent starting on 127.0.0.1:9090",
+	)
 
 	return server.ListenAndServe()
 }

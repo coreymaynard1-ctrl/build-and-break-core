@@ -12,9 +12,13 @@ import (
 )
 
 type HeartbeatRequest struct {
-	CPUThreads  int   `json:"cpu_threads"`
-	TotalMemory int64 `json:"total_memory"`
-	TotalDisk   int64 `json:"total_disk"`
+	CPUThreads        int    `json:"cpu_threads"`
+	TotalMemory       int64  `json:"total_memory"`
+	TotalDisk         int64  `json:"total_disk"`
+	RuntimeAvailable  bool   `json:"runtime_available"`
+	RuntimeName       string `json:"runtime_name"`
+	RuntimeVersion    string `json:"runtime_version"`
+	RuntimeAPIVersion string `json:"runtime_api_version"`
 }
 
 type HeartbeatResponse struct {
@@ -66,11 +70,7 @@ func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		http.Error(
-			w,
-			"failed to authenticate node",
-			http.StatusInternalServerError,
-		)
+		http.Error(w, "failed to authenticate node", http.StatusInternalServerError)
 		return
 	}
 
@@ -84,11 +84,13 @@ func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	if request.CPUThreads <= 0 ||
 		request.TotalMemory <= 0 ||
 		request.TotalDisk <= 0 {
-		http.Error(
-			w,
-			"invalid heartbeat information",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "invalid heartbeat information", http.StatusBadRequest)
+		return
+	}
+
+	// If the runtime is reported as available, it must identify itself.
+	if request.RuntimeAvailable && request.RuntimeName == "" {
+		http.Error(w, "missing runtime information", http.StatusBadRequest)
 		return
 	}
 
@@ -101,6 +103,10 @@ func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 			cpu_threads = $2,
 			total_memory = $3,
 			total_disk = $4,
+			runtime_available = $5,
+			runtime_name = $6,
+			runtime_version = $7,
+			runtime_api_version = $8,
 			last_seen_at = NOW(),
 			updated_at = NOW()
 		WHERE id = $1
@@ -109,14 +115,14 @@ func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		request.CPUThreads,
 		request.TotalMemory,
 		request.TotalDisk,
+		request.RuntimeAvailable,
+		request.RuntimeName,
+		request.RuntimeVersion,
+		request.RuntimeAPIVersion,
 	)
 
 	if err != nil {
-		http.Error(
-			w,
-			"failed to update node",
-			http.StatusInternalServerError,
-		)
+		http.Error(w, "failed to update node", http.StatusInternalServerError)
 		return
 	}
 
