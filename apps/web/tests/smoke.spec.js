@@ -1,0 +1,22 @@
+import { test, expect } from '@playwright/test';
+test('local website, create flow, server panel and sandbox billing use real Core', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const forbidden = []; page.on('request', request => { if (/9090|docker\.sock|\/containers\//.test(request.url())) forbidden.push(request.url()); });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: /Build your world/ })).toBeVisible();
+  await expect(page.getByLabel('Game or app')).toContainText('Minecraft');
+  await page.screenshot({ path: '/tmp/bnb-home.png', fullPage: true });
+  await page.locator('header').getByRole('button', { name: 'Create server', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Create server', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Hosting location')).toContainText('Local Development');
+  await page.locator('header').getByRole('button', { name: 'My servers', exact: true }).click();
+  const original = page.getByRole('heading', { name: 'Development Server', exact: true }).locator('..');
+  await original.getByRole('button', { name: 'Manage server' }).click();
+  await expect(page.getByRole('heading', { name: 'Container Test Service' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'start', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'stop', exact: true })).toBeEnabled();
+  await page.locator('header').getByRole('button', { name: 'Billing', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Billing sandbox', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sandbox invoices', exact: true })).toBeVisible();
+  expect(errors).toEqual([]); expect(forbidden).toEqual([]);
+});

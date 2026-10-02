@@ -19,10 +19,14 @@ type ContainerSpec struct {
 
 	Environment []string
 	Command     []string
+	Port        int
+	VolumeName  string
 }
 
 type ContainerState struct {
 	ID        string
+	ServerID  string
+	ServiceID string
 	Name      string
 	Image     string
 	Status    string

@@ -3,6 +3,11 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +28,7 @@ func (d *DockerRuntime) CreateContainer(
 		return nil, err
 	}
 
-	createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	createCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	config := &container.Config{
@@ -39,6 +44,17 @@ func (d *DockerRuntime) CreateContainer(
 		},
 	}
 
+	if spec.Port != 0 {
+		port := network.MustParsePort("25565/tcp")
+		config.ExposedPorts = network.PortSet{port: struct{}{}}
+		hostConfig.PortBindings = network.PortMap{port: []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(spec.Port)}}}
+	}
+	if spec.VolumeName != "" {
+		hostConfig.Mounts = []mount.Mount{{Type: mount.TypeVolume, Source: spec.VolumeName, Target: "/data"}}
+	}
+	hostConfig.Resources.PidsLimit = new(int64(256))
+	hostConfig.CapDrop = []string{"NET_RAW"}
+	hostConfig.SecurityOpt = []string{"no-new-privileges:true"}
 	// Docker represents CPU capacity using NanoCPUs.
 	//
 	// 1 CPU = 1,000,000,000 NanoCPUs
@@ -104,6 +120,12 @@ func validateContainerSpec(spec ContainerSpec) error {
 		)
 	}
 
+	if spec.Port != 0 && (spec.Port < 1024 || spec.Port > 65535) {
+		return fmt.Errorf("invalid service port")
+	}
+	if spec.VolumeName != "" && spec.VolumeName != "bnb-service-"+spec.ServiceID {
+		return fmt.Errorf("invalid managed volume name")
+	}
 	return nil
 }
 
@@ -154,9 +176,11 @@ func (d *DockerRuntime) InspectContainer(
 	}
 
 	state := &ContainerState{
-		ID:    inspected.ID,
-		Name:  strings.TrimPrefix(inspected.Name, "/"),
-		Image: inspected.Config.Image,
+		ID:        inspected.ID,
+		Name:      strings.TrimPrefix(inspected.Name, "/"),
+		Image:     inspected.Config.Image,
+		ServerID:  inspected.Config.Labels[ServerIDLabel],
+		ServiceID: inspected.Config.Labels[ServiceIDLabel],
 	}
 
 	if inspected.State != nil {
@@ -183,16 +207,19 @@ func (d *DockerRuntime) InspectContainer(
 func (d *DockerRuntime) StartContainer(
 	ctx context.Context,
 	containerID string,
+	serverID, serviceID string,
 ) error {
 	// InspectContainer performs our ownership check first.
-	if _, err := d.InspectContainer(ctx, containerID); err != nil {
+	state, err := d.InspectOwned(ctx, containerID, serverID, serviceID)
+	if err != nil {
 		return err
 	}
+	containerID = state.ID
 
 	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	_, err := d.client.ContainerStart(
+	_, err = d.client.ContainerStart(
 		startCtx,
 		containerID,
 		client.ContainerStartOptions{},
@@ -211,16 +238,19 @@ func (d *DockerRuntime) StartContainer(
 func (d *DockerRuntime) StopContainer(
 	ctx context.Context,
 	containerID string,
+	serverID, serviceID string,
 ) error {
 	// Refuse the operation if this isn't one of our containers.
-	if _, err := d.InspectContainer(ctx, containerID); err != nil {
+	state, err := d.InspectOwned(ctx, containerID, serverID, serviceID)
+	if err != nil {
 		return err
 	}
+	containerID = state.ID
 
 	stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	_, err := d.client.ContainerStop(
+	_, err = d.client.ContainerStop(
 		stopCtx,
 		containerID,
 		client.ContainerStopOptions{},
@@ -242,16 +272,19 @@ func (d *DockerRuntime) StopContainer(
 func (d *DockerRuntime) DeleteContainer(
 	ctx context.Context,
 	containerID string,
+	serverID, serviceID string,
 ) error {
 	// Verify ownership before sending the destructive operation.
-	if _, err := d.InspectContainer(ctx, containerID); err != nil {
+	state, err := d.InspectOwned(ctx, containerID, serverID, serviceID)
+	if err != nil {
 		return err
 	}
+	containerID = state.ID
 
 	deleteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	_, err := d.client.ContainerRemove(
+	_, err = d.client.ContainerRemove(
 		deleteCtx,
 		containerID,
 		client.ContainerRemoveOptions{
@@ -268,3 +301,17 @@ func (d *DockerRuntime) DeleteContainer(
 
 	return nil
 }
+
+// InspectOwned checks all allocation labels, not just the managed marker.
+func (d *DockerRuntime) InspectOwned(ctx context.Context, id, serverID, serviceID string) (*ContainerState, error) {
+	state, err := d.InspectContainer(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if serverID == "" || serviceID == "" || state.ServerID != serverID || state.ServiceID != serviceID {
+		return nil, fmt.Errorf("container ownership does not match expected server/service")
+	}
+	return state, nil
+}
+
+func IsNotFound(err error) bool { return errdefs.IsNotFound(err) }

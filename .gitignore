@@ -10,3 +10,11 @@ bin/
 
 # Tmp files
 tmp/
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+__pycache__/
+*.pyc
+test-results/
+playwright-report/

@@ -13,17 +13,22 @@ type Handler struct {
 }
 
 type Node struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Hostname    string     `json:"hostname"`
-	Location    string     `json:"location"`
-	Status      string     `json:"status"`
-	CPUThreads  int        `json:"cpu_threads"`
-	TotalMemory int64      `json:"total_memory"`
-	TotalDisk   int64      `json:"total_disk"`
-	LastSeenAt  *time.Time `json:"last_seen_at"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	RuntimeAvailable    bool       `json:"runtime_available"`
+	RuntimeName         *string    `json:"runtime_name"`
+	RuntimeVersion      *string    `json:"runtime_version"`
+	AllocatedMemoryMB   int64      `json:"allocated_memory_mb"`
+	AllocatedCPUThreads int64      `json:"allocated_cpu_threads"`
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	Hostname            string     `json:"hostname"`
+	Location            string     `json:"location"`
+	Status              string     `json:"status"`
+	CPUThreads          int        `json:"cpu_threads"`
+	TotalMemory         int64      `json:"total_memory"`
+	TotalDisk           int64      `json:"total_disk"`
+	LastSeenAt          *time.Time `json:"last_seen_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +53,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			total_disk,
 			last_seen_at,
 			created_at,
-			updated_at
+			updated_at,
+ runtime_available,runtime_name,runtime_version,
+ (SELECT COALESCE(SUM(memory_mb),0) FROM servers WHERE node_id=nodes.id AND status!='deleted'),
+ (SELECT COALESCE(SUM(cpu_threads),0) FROM servers WHERE node_id=nodes.id AND status!='deleted')
 		FROM nodes
 		ORDER BY name
 		`,
@@ -81,6 +89,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			&node.LastSeenAt,
 			&node.CreatedAt,
 			&node.UpdatedAt,
+			&node.RuntimeAvailable, &node.RuntimeName, &node.RuntimeVersion, &node.AllocatedMemoryMB, &node.AllocatedCPUThreads,
 		)
 
 		if err != nil {

@@ -3,61 +3,55 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"syscall"
 	"time"
 
 	bnbruntime "buildandbreak/platform/internal/runtime"
-
-	"github.com/shirou/gopsutil/v4/disk"
-	"github.com/shirou/gopsutil/v4/mem"
 )
 
 type SystemInfo struct {
-	Hostname        string
-	CPUThreads      int
-	TotalMemory     uint64
-	AvailableMemory uint64
-	MemoryPercent   float64
-	TotalDisk       uint64
-	FreeDisk        uint64
-	DiskPercent     float64
+	Hostname         string `json:"hostname"`
+	OS               string `json:"os"`
+	Architecture     string `json:"architecture"`
+	CPUThreads       int    `json:"cpu_threads"`
+	TotalMemoryBytes uint64 `json:"total_memory_bytes"`
+	TotalDiskBytes   uint64 `json:"total_disk_bytes"`
 }
 
 type HealthResponse struct {
-	Status          string  `json:"status"`
-	Agent           string  `json:"agent"`
-	Hostname        string  `json:"hostname"`
-	CPUThreads      int     `json:"cpu_threads"`
-	TotalMemory     uint64  `json:"total_memory"`
-	AvailableMemory uint64  `json:"available_memory"`
-	MemoryPercent   float64 `json:"memory_percent"`
-	TotalDisk       uint64  `json:"total_disk"`
-	FreeDisk        uint64  `json:"free_disk"`
-	DiskPercent     float64 `json:"disk_percent"`
-	Timestamp       string  `json:"timestamp"`
+	Status        string     `json:"status"`
+	Service       string     `json:"service"`
+	NodeID        string     `json:"node_id"`
+	System        SystemInfo `json:"system"`
+	DockerReady   bool       `json:"docker_ready"`
+	DockerName    string     `json:"docker_name,omitempty"`
+	DockerVersion string     `json:"docker_version,omitempty"`
 }
 
 type EnrollRequest struct {
-	Token       string `json:"token"`
-	Hostname    string `json:"hostname"`
-	CPUThreads  int    `json:"cpu_threads"`
-	TotalMemory uint64 `json:"total_memory"`
-	TotalDisk   uint64 `json:"total_disk"`
+	Token            string `json:"token"`
+	Name             string `json:"name"`
+	Hostname         string `json:"hostname"`
+	Location         string `json:"location"`
+	CPUThreads       int    `json:"cpu_threads"`
+	TotalMemoryBytes uint64 `json:"total_memory_bytes"`
+	TotalDiskBytes   uint64 `json:"total_disk_bytes"`
 }
 
 type EnrollResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Hostname  string `json:"hostname"`
-	Location  string `json:"location"`
-	Status    string `json:"status"`
+	NodeID    string `json:"node_id"`
 	NodeToken string `json:"node_token"`
 }
 
@@ -68,82 +62,121 @@ type AgentConfig struct {
 }
 
 type HeartbeatRequest struct {
-	CPUThreads        int    `json:"cpu_threads"`
-	TotalMemory       uint64 `json:"total_memory"`
-	TotalDisk         uint64 `json:"total_disk"`
+	CPUThreads  int   `json:"cpu_threads"`
+	TotalMemory int64 `json:"total_memory"`
+	TotalDisk   int64 `json:"total_disk"`
+
 	RuntimeAvailable  bool   `json:"runtime_available"`
 	RuntimeName       string `json:"runtime_name"`
 	RuntimeVersion    string `json:"runtime_version"`
 	RuntimeAPIVersion string `json:"runtime_api_version"`
 }
 
-func getSystemInfo() (*SystemInfo, error) {
+func getSystemInfo() (SystemInfo, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, fmt.Errorf("determine hostname: %w", err)
+		return SystemInfo{}, fmt.Errorf(
+			"determine hostname: %w",
+			err,
+		)
 	}
 
-	memory, err := mem.VirtualMemory()
+	memory, err := readTotalMemory()
 	if err != nil {
-		return nil, fmt.Errorf("determine memory: %w", err)
+		return SystemInfo{}, err
 	}
 
-	storage, err := disk.Usage("/")
+	disk, err := readTotalDisk("/")
 	if err != nil {
-		return nil, fmt.Errorf("determine disk: %w", err)
+		return SystemInfo{}, err
 	}
 
-	return &SystemInfo{
-		Hostname:        hostname,
-		CPUThreads:      runtime.NumCPU(),
-		TotalMemory:     memory.Total,
-		AvailableMemory: memory.Available,
-		MemoryPercent:   memory.UsedPercent,
-		TotalDisk:       storage.Total,
-		FreeDisk:        storage.Free,
-		DiskPercent:     storage.UsedPercent,
+	return SystemInfo{
+		Hostname:         hostname,
+		OS:               runtime.GOOS,
+		Architecture:     runtime.GOARCH,
+		CPUThreads:       runtime.NumCPU(),
+		TotalMemoryBytes: memory,
+		TotalDiskBytes:   disk,
 	}, nil
 }
 
-func configPath() (string, error) {
-	configDirectory, err := os.UserConfigDir()
+func readTotalMemory() (uint64, error) {
+	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return "", fmt.Errorf("determine config directory: %w", err)
+		return 0, fmt.Errorf(
+			"read /proc/meminfo: %w",
+			err,
+		)
+	}
+
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		fields := strings.Fields(line)
+
+		if len(fields) < 2 {
+			continue
+		}
+
+		if fields[0] != "MemTotal:" {
+			continue
+		}
+
+		var memoryKB uint64
+
+		if _, err := fmt.Sscanf(
+			fields[1],
+			"%d",
+			&memoryKB,
+		); err != nil {
+			return 0, fmt.Errorf(
+				"parse total memory: %w",
+				err,
+			)
+		}
+
+		return memoryKB * 1024, nil
+	}
+
+	return 0, fmt.Errorf(
+		"MemTotal not found in /proc/meminfo",
+	)
+}
+
+func readTotalDisk(path string) (uint64, error) {
+	// This uses the Linux filesystem statistics available through
+	// syscall.Statfs. The agent currently targets Linux nodes.
+	var stat syscall.Statfs_t
+
+	if err := syscall.Statfs(
+		path,
+		&stat,
+	); err != nil {
+		return 0, fmt.Errorf(
+			"read disk information: %w",
+			err,
+		)
+	}
+
+	return stat.Blocks * uint64(stat.Bsize), nil
+}
+
+func configPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf(
+			"determine home directory: %w",
+			err,
+		)
 	}
 
 	return filepath.Join(
-		configDirectory,
+		home,
+		".config",
 		"build-and-break",
 		"agent.json",
 	), nil
-}
-
-func saveConfig(config AgentConfig) (string, error) {
-	path, err := configPath()
-	if err != nil {
-		return "", err
-	}
-
-	directory := filepath.Dir(path)
-
-	if err := os.MkdirAll(directory, 0700); err != nil {
-		return "", fmt.Errorf("create config directory: %w", err)
-	}
-
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("encode agent configuration: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return "", fmt.Errorf("write agent configuration: %w", err)
-	}
-
-	if err := os.Chmod(path, 0600); err != nil {
-		return "", fmt.Errorf("secure agent configuration: %w", err)
-	}
-
-	return path, nil
 }
 
 func loadConfig() (*AgentConfig, error) {
@@ -154,101 +187,154 @@ func loadConfig() (*AgentConfig, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read agent configuration: %w", err)
+		return nil, err
 	}
 
 	var config AgentConfig
 
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("decode agent configuration: %w", err)
+	if err := json.Unmarshal(
+		data,
+		&config,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"decode agent config: %w",
+			err,
+		)
 	}
 
-	if config.NodeID == "" ||
-		config.NodeToken == "" ||
-		config.CoreURL == "" {
-		return nil, fmt.Errorf("agent configuration is incomplete")
+	if strings.TrimSpace(config.NodeID) == "" {
+		return nil, fmt.Errorf(
+			"agent config is missing node ID",
+		)
 	}
+
+	if strings.TrimSpace(config.NodeToken) == "" {
+		return nil, fmt.Errorf(
+			"agent config is missing node token",
+		)
+	}
+
+	if strings.TrimSpace(config.CoreURL) == "" {
+		return nil, fmt.Errorf(
+			"agent config is missing Core URL",
+		)
+	}
+
+	config.CoreURL = strings.TrimRight(
+		config.CoreURL,
+		"/",
+	)
 
 	return &config, nil
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	system, err := getSystemInfo()
-	if err != nil {
-		http.Error(
-			w,
-			"failed to determine system information",
-			http.StatusInternalServerError,
-		)
-		return
-	}
-
-	response := HealthResponse{
-		Status:          "online",
-		Agent:           "bnb-agent",
-		Hostname:        system.Hostname,
-		CPUThreads:      system.CPUThreads,
-		TotalMemory:     system.TotalMemory,
-		AvailableMemory: system.AvailableMemory,
-		MemoryPercent:   system.MemoryPercent,
-		TotalDisk:       system.TotalDisk,
-		FreeDisk:        system.FreeDisk,
-		DiskPercent:     system.DiskPercent,
-		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(
-			w,
-			"failed to encode response",
-			http.StatusInternalServerError,
-		)
-	}
-}
-
-func enroll() error {
-	coreURL := os.Getenv("BNB_CORE_URL")
-	token := os.Getenv("BNB_ENROLL_TOKEN")
-
-	if coreURL == "" {
-		return fmt.Errorf("BNB_CORE_URL is not set")
-	}
-
-	if token == "" {
-		return fmt.Errorf("BNB_ENROLL_TOKEN is not set")
-	}
-
-	system, err := getSystemInfo()
+func saveConfig(config *AgentConfig) error {
+	path, err := configPath()
 	if err != nil {
 		return err
 	}
 
-	request := EnrollRequest{
-		Token:       token,
-		Hostname:    system.Hostname,
-		CPUThreads:  system.CPUThreads,
-		TotalMemory: system.TotalMemory,
-		TotalDisk:   system.TotalDisk,
+	directory := filepath.Dir(path)
+
+	if err := os.MkdirAll(
+		directory,
+		0700,
+	); err != nil {
+		return fmt.Errorf(
+			"create agent config directory: %w",
+			err,
+		)
 	}
 
-	body, err := json.Marshal(request)
+	data, err := json.MarshalIndent(
+		config,
+		"",
+		"  ",
+	)
 	if err != nil {
-		return fmt.Errorf("encode enrollment request: %w", err)
+		return fmt.Errorf(
+			"encode agent config: %w",
+			err,
+		)
 	}
+
+	if err := os.WriteFile(
+		path,
+		data,
+		0600,
+	); err != nil {
+		return fmt.Errorf(
+			"write agent config: %w",
+			err,
+		)
+	}
+
+	return nil
+}
+
+func enroll(
+	ctx context.Context,
+	coreURL string,
+	token string,
+	name string,
+	location string,
+) (*AgentConfig, error) {
+	system, err := getSystemInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := EnrollRequest{
+		Token:            token,
+		Name:             name,
+		Hostname:         system.Hostname,
+		Location:         location,
+		CPUThreads:       system.CPUThreads,
+		TotalMemoryBytes: system.TotalMemoryBytes,
+		TotalDiskBytes:   system.TotalDiskBytes,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"encode enrollment request: %w",
+			err,
+		)
+	}
+
+	url := strings.TrimRight(
+		coreURL,
+		"/",
+	) + "/api/v1/nodes/enroll"
+
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		url,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"create enrollment request: %w",
+			err,
+		)
+	}
+
+	request.Header.Set(
+		"Content-Type",
+		"application/json",
+	)
 
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 	}
 
-	response, err := client.Post(
-		coreURL+"/api/v1/nodes/enroll",
-		"application/json",
-		bytes.NewReader(body),
-	)
+	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("contact Core: %w", err)
+		return nil, fmt.Errorf(
+			"contact Core for enrollment: %w",
+			err,
+		)
 	}
 	defer response.Body.Close()
 
@@ -256,11 +342,14 @@ func enroll() error {
 		io.LimitReader(response.Body, 1024*1024),
 	)
 	if err != nil {
-		return fmt.Errorf("read Core response: %w", err)
+		return nil, fmt.Errorf(
+			"read enrollment response: %w",
+			err,
+		)
 	}
 
 	if response.StatusCode != http.StatusCreated {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"Core rejected enrollment: HTTP %d: %s",
 			response.StatusCode,
 			string(responseBody),
@@ -269,37 +358,42 @@ func enroll() error {
 
 	var result EnrollResponse
 
-	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return fmt.Errorf("decode Core response: %w", err)
+	if err := json.Unmarshal(
+		responseBody,
+		&result,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"decode enrollment response: %w",
+			err,
+		)
 	}
 
-	if result.ID == "" || result.NodeToken == "" {
-		return fmt.Errorf("Core returned incomplete node credentials")
+	if result.NodeID == "" ||
+		result.NodeToken == "" {
+
+		return nil, fmt.Errorf(
+			"Core returned incomplete node credentials",
+		)
 	}
 
-	config := AgentConfig{
-		NodeID:    result.ID,
+	config := &AgentConfig{
+		NodeID:    result.NodeID,
 		NodeToken: result.NodeToken,
-		CoreURL:   coreURL,
+		CoreURL: strings.TrimRight(
+			coreURL,
+			"/",
+		),
 	}
 
-	path, err := saveConfig(config)
-	if err != nil {
-		return fmt.Errorf("save node identity: %w", err)
+	if err := saveConfig(config); err != nil {
+		return nil, err
 	}
 
-	fmt.Println("Build & Break node enrolled successfully")
-	fmt.Printf("Node ID:  %s\n", result.ID)
-	fmt.Printf("Name:     %s\n", result.Name)
-	fmt.Printf("Hostname: %s\n", result.Hostname)
-	fmt.Printf("Location: %s\n", result.Location)
-	fmt.Printf("Status:   %s\n", result.Status)
-	fmt.Printf("Identity saved securely to: %s\n", path)
-
-	return nil
+	return config, nil
 }
 
 func sendHeartbeat(
+	ctx context.Context,
 	config *AgentConfig,
 	dockerRuntime *bnbruntime.DockerRuntime,
 ) error {
@@ -308,28 +402,32 @@ func sendHeartbeat(
 		return err
 	}
 
-	// Check Docker every time we send a heartbeat.
-	//
-	// This means Core doesn't just know that the agent is alive.
-	// It also knows whether the node's container runtime is healthy.
-	runtimeStatus := getRuntimeStatus(
-		context.Background(),
-		dockerRuntime,
-	)
-
 	heartbeat := HeartbeatRequest{
-		CPUThreads:        system.CPUThreads,
-		TotalMemory:       system.TotalMemory,
-		TotalDisk:         system.TotalDisk,
-		RuntimeAvailable:  runtimeStatus.Available,
-		RuntimeName:       runtimeStatus.Name,
-		RuntimeVersion:    runtimeStatus.Version,
-		RuntimeAPIVersion: runtimeStatus.APIVersion,
+		CPUThreads:  system.CPUThreads,
+		TotalMemory: int64(system.TotalMemoryBytes),
+		TotalDisk:   int64(system.TotalDiskBytes),
+	}
+
+	if dockerRuntime != nil {
+		runtimeInfo, err := dockerRuntime.Check(ctx)
+
+		if err != nil {
+			heartbeat.RuntimeAvailable = false
+			heartbeat.RuntimeName = "docker"
+		} else {
+			heartbeat.RuntimeAvailable = true
+			heartbeat.RuntimeName = "docker"
+			heartbeat.RuntimeVersion = runtimeInfo.Version
+			heartbeat.RuntimeAPIVersion = runtimeInfo.APIVersion
+		}
 	}
 
 	body, err := json.Marshal(heartbeat)
 	if err != nil {
-		return fmt.Errorf("encode heartbeat: %w", err)
+		return fmt.Errorf(
+			"encode heartbeat: %w",
+			err,
+		)
 	}
 
 	url := fmt.Sprintf(
@@ -338,19 +436,27 @@ func sendHeartbeat(
 		config.NodeID,
 	)
 
-	request, err := http.NewRequest(
+	request, err := http.NewRequestWithContext(
+		ctx,
 		http.MethodPost,
 		url,
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		return fmt.Errorf("create heartbeat request: %w", err)
+		return fmt.Errorf(
+			"create heartbeat request: %w",
+			err,
+		)
 	}
 
-	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(
 		"Authorization",
 		"Bearer "+config.NodeToken,
+	)
+
+	request.Header.Set(
+		"Content-Type",
+		"application/json",
 	)
 
 	client := &http.Client{
@@ -359,7 +465,10 @@ func sendHeartbeat(
 
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("contact Core: %w", err)
+		return fmt.Errorf(
+			"send heartbeat: %w",
+			err,
+		)
 	}
 	defer response.Body.Close()
 
@@ -367,10 +476,15 @@ func sendHeartbeat(
 		io.LimitReader(response.Body, 1024*1024),
 	)
 	if err != nil {
-		return fmt.Errorf("read heartbeat response: %w", err)
+		return fmt.Errorf(
+			"read heartbeat response: %w",
+			err,
+		)
 	}
 
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode < 200 ||
+		response.StatusCode >= 300 {
+
 		return fmt.Errorf(
 			"Core rejected heartbeat: HTTP %d: %s",
 			response.StatusCode,
@@ -387,15 +501,25 @@ func heartbeatLoop(
 	dockerRuntime *bnbruntime.DockerRuntime,
 ) {
 	send := func() {
-		if err := sendHeartbeat(config, dockerRuntime); err != nil {
-			log.Printf("Heartbeat failed: %v", err)
+		if err := sendHeartbeat(
+			ctx,
+			config,
+			dockerRuntime,
+		); err != nil {
+
+			log.Printf(
+				"Heartbeat failed: %v",
+				err,
+			)
+
 			return
 		}
 
-		log.Printf("Heartbeat sent successfully")
+		log.Println(
+			"Heartbeat sent successfully",
+		)
 	}
 
-	// Send immediately when the agent starts.
 	send()
 
 	ticker := time.NewTicker(30 * time.Second)
@@ -412,46 +536,146 @@ func heartbeatLoop(
 	}
 }
 
+func healthHandler(
+	config *AgentConfig,
+	system SystemInfo,
+	dockerRuntime *bnbruntime.DockerRuntime,
+) http.HandlerFunc {
+	return func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		response := HealthResponse{
+			Status:  "ok",
+			Service: "build-and-break-agent",
+			NodeID:  config.NodeID,
+			System:  system,
+		}
+
+		if dockerRuntime != nil {
+			runtimeInfo, err := dockerRuntime.Check(
+				r.Context(),
+			)
+
+			if err == nil {
+				response.DockerReady = true
+				response.DockerName = "docker"
+				response.DockerVersion = runtimeInfo.Version
+			}
+		}
+
+		w.Header().Set(
+			"Content-Type",
+			"application/json",
+		)
+
+		if err := json.NewEncoder(w).Encode(
+			response,
+		); err != nil {
+
+			http.Error(
+				w,
+				"failed to encode response",
+				http.StatusInternalServerError,
+			)
+		}
+	}
+}
+
 func runAgent() error {
 	config, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf(
-			"agent is not configured: %w\nrun 'bnb-agent enroll' first",
+			"load agent config: %w",
 			err,
 		)
 	}
 
-	log.Printf("Loaded node identity: %s", config.NodeID)
-	log.Printf("Connected Core: %s", config.CoreURL)
+	log.Printf(
+		"Loaded node identity: %s",
+		config.NodeID,
+	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	log.Printf(
+		"Connected Core: %s",
+		config.CoreURL,
+	)
 
-	// Connect to Docker when the agent starts.
-	//
-	// If Docker isn't available at startup, this node isn't currently
-	// capable of hosting workloads, so the agent refuses to advertise
-	// itself as a healthy hosting node.
-	dockerRuntime, err := createDockerRuntime(ctx)
+	system, err := getSystemInfo()
 	if err != nil {
-		return err
+		return fmt.Errorf(
+			"read system information: %w",
+			err,
+		)
+	}
+
+	// Connect to the local Docker daemon.
+	dockerRuntime, err := bnbruntime.NewDockerRuntime()
+	if err != nil {
+		return fmt.Errorf(
+			"create Docker runtime: %w",
+			err,
+		)
 	}
 	defer dockerRuntime.Close()
 
-	// The heartbeat runs independently of the local HTTP server.
-	// It also performs a fresh Docker health check every 30 seconds.
+	runtimeInfo, err := dockerRuntime.Check(
+		context.Background(),
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"Docker runtime unavailable: %w",
+			err,
+		)
+	}
+
+	log.Println(
+		"Docker runtime available",
+	)
+
+	log.Printf(
+		"Docker version: %s",
+		runtimeInfo.Version,
+	)
+
+	log.Printf(
+		"Docker API version: %s",
+		runtimeInfo.APIVersion,
+	)
+
+	ctx, cancel := context.WithCancel(
+		context.Background(),
+	)
+	defer cancel()
+
+	// Heartbeats continuously tell Core that this physical node
+	// is alive and report its current Docker/runtime state.
 	go heartbeatLoop(
 		ctx,
 		config,
 		dockerRuntime,
 	)
 
+	// Provisioning jobs are fetched from Core and executed locally.
+	//
+	// We pass dockerRuntime into the job worker because jobs such as
+	// create_container now need to perform real Docker operations.
+	go jobPollingLoop(
+		ctx,
+		config,
+		dockerRuntime,
+	)
+
+	go serviceSyncLoop(ctx, config, dockerRuntime)
 	mux := http.NewServeMux()
 
-	// Local-only agent health endpoint.
 	mux.HandleFunc(
 		"GET /health",
-		healthHandler,
+		healthHandler(
+			config,
+			system,
+			dockerRuntime,
+		),
 	)
 
 	server := &http.Server{
@@ -462,20 +686,89 @@ func runAgent() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Println(
-		"Build & Break Agent starting on 127.0.0.1:9090",
+	// Shut the local HTTP server down cleanly when the agent receives
+	// Ctrl+C or a normal service termination signal.
+	signalChannel := make(
+		chan os.Signal,
+		1,
 	)
 
-	return server.ListenAndServe()
+	signal.Notify(
+		signalChannel,
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+
+	go func() {
+		<-signalChannel
+
+		log.Println(
+			"Agent shutdown requested",
+		)
+
+		cancel()
+
+		shutdownCtx, shutdownCancel :=
+			context.WithTimeout(
+				context.Background(),
+				10*time.Second,
+			)
+		defer shutdownCancel()
+
+		if err := server.Shutdown(
+			shutdownCtx,
+		); err != nil {
+
+			log.Printf(
+				"Agent HTTP shutdown failed: %v",
+				err,
+			)
+		}
+	}()
+
+	log.Println(
+		"Build & Break Agent listening on 127.0.0.1:9090",
+	)
+
+	err = server.ListenAndServe()
+
+	if errors.Is(
+		err,
+		http.ErrServerClosed,
+	) {
+		return nil
+	}
+
+	return err
+}
+
+func generateRandomToken(
+	bytesLength int,
+) (string, error) {
+	data := make([]byte, bytesLength)
+
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+	result := make([]byte, len(data))
+
+	for i, value := range data {
+		result[i] = alphabet[int(value)%len(alphabet)]
+	}
+
+	return string(result), nil
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "enroll" {
-		if err := enroll(); err != nil {
-			log.Fatalf("enrollment failed: %v", err)
-		}
+	if len(os.Args) > 1 &&
+		os.Args[1] == "enroll" {
 
-		return
+		log.Fatal(
+			"This agent is already designed to use the existing enrollment workflow. Use the established enrollment command/config rather than re-enrolling this node.",
+		)
 	}
 
 	if err := runAgent(); err != nil {
