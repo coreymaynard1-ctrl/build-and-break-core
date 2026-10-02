@@ -1,0 +1,12 @@
+# Secrets / env configs
+.env
+.env.*
+
+# Logs / client servs
+*.log
+
+# Compiled progs
+bin/
+
+# Tmp files
+tmp/
