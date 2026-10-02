@@ -1,10 +1,12 @@
 package nodes
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -20,11 +22,22 @@ type EnrollRequest struct {
 }
 
 type EnrollResponse struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Hostname string `json:"hostname"`
-	Location string `json:"location"`
-	Status   string `json:"status"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Hostname  string `json:"hostname"`
+	Location  string `json:"location"`
+	Status    string `json:"status"`
+	NodeToken string `json:"node_token"`
+}
+
+func generateNodeToken() (string, error) {
+	randomBytes := make([]byte, 32)
+
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("generate random node credential: %w", err)
+	}
+
+	return "bnb_node_" + hex.EncodeToString(randomBytes), nil
 }
 
 func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
@@ -40,21 +53,30 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 		request.CPUThreads <= 0 ||
 		request.TotalMemory <= 0 ||
 		request.TotalDisk <= 0 {
-		http.Error(w, "missing or invalid enrollment information", http.StatusBadRequest)
+		http.Error(
+			w,
+			"missing or invalid enrollment information",
+			http.StatusBadRequest,
+		)
 		return
 	}
 
-	tokenSum := sha256.Sum256([]byte(request.Token))
-	tokenHash := hex.EncodeToString(tokenSum[:])
+	enrollmentTokenSum := sha256.Sum256([]byte(request.Token))
+	enrollmentTokenHash := hex.EncodeToString(enrollmentTokenSum[:])
 
 	tx, err := h.DB.Begin(r.Context())
 	if err != nil {
-		http.Error(w, "failed to start enrollment", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to start enrollment",
+			http.StatusInternalServerError,
+		)
 		return
 	}
+
 	defer tx.Rollback(r.Context())
 
-	var tokenID string
+	var enrollmentTokenID string
 	var nodeName string
 	var location string
 	var expiresAt time.Time
@@ -73,9 +95,9 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 		WHERE token_hash = $1
 		FOR UPDATE
 		`,
-		tokenHash,
+		enrollmentTokenHash,
 	).Scan(
-		&tokenID,
+		&enrollmentTokenID,
 		&nodeName,
 		&location,
 		&expiresAt,
@@ -83,24 +105,57 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "invalid enrollment token", http.StatusUnauthorized)
+		http.Error(
+			w,
+			"invalid enrollment token",
+			http.StatusUnauthorized,
+		)
 		return
 	}
 
 	if err != nil {
-		http.Error(w, "failed to verify enrollment token", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to verify enrollment token",
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
 	if usedAt != nil {
-		http.Error(w, "enrollment token has already been used", http.StatusUnauthorized)
+		http.Error(
+			w,
+			"enrollment token has already been used",
+			http.StatusUnauthorized,
+		)
 		return
 	}
 
 	if time.Now().After(expiresAt) {
-		http.Error(w, "enrollment token has expired", http.StatusUnauthorized)
+		http.Error(
+			w,
+			"enrollment token has expired",
+			http.StatusUnauthorized,
+		)
 		return
 	}
+
+	// Generate the permanent secret that this node will use
+	// after its one-time enrollment has completed.
+	nodeToken, err := generateNodeToken()
+	if err != nil {
+		http.Error(
+			w,
+			"failed to generate node credential",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	// PostgreSQL receives only the SHA-256 hash.
+	// The raw node token is returned to the agent once.
+	nodeTokenSum := sha256.Sum256([]byte(nodeToken))
+	nodeTokenHash := hex.EncodeToString(nodeTokenSum[:])
 
 	var nodeID string
 
@@ -138,10 +193,39 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 	).Scan(&nodeID)
 
 	if err != nil {
-		http.Error(w, "failed to create node", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to create node",
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
+	// Store the permanent credential hash against this node.
+	_, err = tx.Exec(
+		r.Context(),
+		`
+		INSERT INTO node_credentials (
+			node_id,
+			token_hash
+		)
+		VALUES ($1, $2)
+		`,
+		nodeID,
+		nodeTokenHash,
+	)
+
+	if err != nil {
+		http.Error(
+			w,
+			"failed to create node credential",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	// The enrollment token has now done its job.
+	// Mark it as used so it cannot enroll another node.
 	_, err = tx.Exec(
 		r.Context(),
 		`
@@ -149,25 +233,34 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 		SET used_at = NOW()
 		WHERE id = $1
 		`,
-		tokenID,
+		enrollmentTokenID,
 	)
 
 	if err != nil {
-		http.Error(w, "failed to consume enrollment token", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to consume enrollment token",
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		http.Error(w, "failed to complete enrollment", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to complete enrollment",
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
 	response := EnrollResponse{
-		ID:       nodeID,
-		Name:     nodeName,
-		Hostname: request.Hostname,
-		Location: location,
-		Status:   "online",
+		ID:        nodeID,
+		Name:      nodeName,
+		Hostname:  request.Hostname,
+		Location:  location,
+		Status:    "online",
+		NodeToken: nodeToken,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

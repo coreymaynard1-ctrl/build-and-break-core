@@ -27,7 +27,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to encode response",
+			http.StatusInternalServerError,
+		)
 	}
 }
 
@@ -43,31 +47,37 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
-	// Give the node handlers access to our PostgreSQL connection.
+	// Node handlers use this database connection for things such as
+	// listing nodes, enrollment and authenticated heartbeats.
 	nodeHandler := &nodes.Handler{
 		DB: db,
 	}
 
-	// Create the HTTP router.
+	// Create the Core API router.
 	mux := http.NewServeMux()
 
-	// Core health endpoint.
+	// Basic Core health check.
 	mux.HandleFunc(
 		"GET /api/v1/health",
 		healthHandler,
 	)
 
-	// Return all registered Build & Break nodes.
+	// Return registered Build & Break nodes.
 	mux.HandleFunc(
 		"GET /api/v1/nodes",
 		nodeHandler.List,
 	)
 
-	// Allow a new bnb-agent to enroll using a valid
-	// one-time enrollment token.
+	// Enroll a new bnb-agent using a one-time enrollment token.
 	mux.HandleFunc(
 		"POST /api/v1/nodes/enroll",
 		nodeHandler.Enroll,
+	)
+
+	// Receive an authenticated heartbeat from an enrolled node.
+	mux.HandleFunc(
+		"POST /api/v1/nodes/{id}/heartbeat",
+		nodeHandler.Heartbeat,
 	)
 
 	// Configure the Core HTTP server.

@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -49,11 +51,24 @@ type EnrollRequest struct {
 }
 
 type EnrollResponse struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Hostname string `json:"hostname"`
-	Location string `json:"location"`
-	Status   string `json:"status"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Hostname  string `json:"hostname"`
+	Location  string `json:"location"`
+	Status    string `json:"status"`
+	NodeToken string `json:"node_token"`
+}
+
+type AgentConfig struct {
+	NodeID    string `json:"node_id"`
+	NodeToken string `json:"node_token"`
+	CoreURL   string `json:"core_url"`
+}
+
+type HeartbeatRequest struct {
+	CPUThreads  int    `json:"cpu_threads"`
+	TotalMemory uint64 `json:"total_memory"`
+	TotalDisk   uint64 `json:"total_disk"`
 }
 
 func getSystemInfo() (*SystemInfo, error) {
@@ -84,10 +99,81 @@ func getSystemInfo() (*SystemInfo, error) {
 	}, nil
 }
 
+func configPath() (string, error) {
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("determine config directory: %w", err)
+	}
+
+	return filepath.Join(
+		configDirectory,
+		"build-and-break",
+		"agent.json",
+	), nil
+}
+
+func saveConfig(config AgentConfig) (string, error) {
+	path, err := configPath()
+	if err != nil {
+		return "", err
+	}
+
+	directory := filepath.Dir(path)
+
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return "", fmt.Errorf("create config directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("encode agent configuration: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return "", fmt.Errorf("write agent configuration: %w", err)
+	}
+
+	if err := os.Chmod(path, 0600); err != nil {
+		return "", fmt.Errorf("secure agent configuration: %w", err)
+	}
+
+	return path, nil
+}
+
+func loadConfig() (*AgentConfig, error) {
+	path, err := configPath()
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read agent configuration: %w", err)
+	}
+
+	var config AgentConfig
+
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("decode agent configuration: %w", err)
+	}
+
+	if config.NodeID == "" ||
+		config.NodeToken == "" ||
+		config.CoreURL == "" {
+		return nil, fmt.Errorf("agent configuration is incomplete")
+	}
+
+	return &config, nil
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	system, err := getSystemInfo()
 	if err != nil {
-		http.Error(w, "failed to determine system information", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to determine system information",
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
@@ -108,7 +194,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"failed to encode response",
+			http.StatusInternalServerError,
+		)
 	}
 }
 
@@ -175,19 +265,142 @@ func enroll() error {
 		return fmt.Errorf("decode Core response: %w", err)
 	}
 
+	if result.ID == "" || result.NodeToken == "" {
+		return fmt.Errorf("Core returned incomplete node credentials")
+	}
+
+	config := AgentConfig{
+		NodeID:    result.ID,
+		NodeToken: result.NodeToken,
+		CoreURL:   coreURL,
+	}
+
+	path, err := saveConfig(config)
+	if err != nil {
+		return fmt.Errorf("save node identity: %w", err)
+	}
+
 	fmt.Println("Build & Break node enrolled successfully")
 	fmt.Printf("Node ID:  %s\n", result.ID)
 	fmt.Printf("Name:     %s\n", result.Name)
 	fmt.Printf("Hostname: %s\n", result.Hostname)
 	fmt.Printf("Location: %s\n", result.Location)
 	fmt.Printf("Status:   %s\n", result.Status)
+	fmt.Printf("Identity saved securely to: %s\n", path)
 
 	return nil
 }
 
-func runAgent() error {
-	mux := http.NewServeMux()
+func sendHeartbeat(config *AgentConfig) error {
+	system, err := getSystemInfo()
+	if err != nil {
+		return err
+	}
 
+	heartbeat := HeartbeatRequest{
+		CPUThreads:  system.CPUThreads,
+		TotalMemory: system.TotalMemory,
+		TotalDisk:   system.TotalDisk,
+	}
+
+	body, err := json.Marshal(heartbeat)
+	if err != nil {
+		return fmt.Errorf("encode heartbeat: %w", err)
+	}
+
+	url := fmt.Sprintf(
+		"%s/api/v1/nodes/%s/heartbeat",
+		config.CoreURL,
+		config.NodeID,
+	)
+
+	request, err := http.NewRequest(
+		http.MethodPost,
+		url,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf("create heartbeat request: %w", err)
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(
+		"Authorization",
+		"Bearer "+config.NodeToken,
+	)
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("contact Core: %w", err)
+	}
+	defer response.Body.Close()
+
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return fmt.Errorf("read heartbeat response: %w", err)
+	}
+
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf(
+			"Core rejected heartbeat: HTTP %d: %s",
+			response.StatusCode,
+			string(responseBody),
+		)
+	}
+
+	return nil
+}
+
+func heartbeatLoop(ctx context.Context, config *AgentConfig) {
+	send := func() {
+		if err := sendHeartbeat(config); err != nil {
+			log.Printf("Heartbeat failed: %v", err)
+			return
+		}
+
+		log.Printf("Heartbeat sent successfully")
+	}
+
+	// Send one immediately rather than waiting 30 seconds
+	// after the agent starts.
+	send()
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			send()
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func runAgent() error {
+	config, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf(
+			"agent is not configured: %w\nrun 'bnb-agent enroll' first",
+			err,
+		)
+	}
+
+	log.Printf("Loaded node identity: %s", config.NodeID)
+	log.Printf("Connected Core: %s", config.CoreURL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go heartbeatLoop(ctx, config)
+
+	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler)
 
 	server := &http.Server{
