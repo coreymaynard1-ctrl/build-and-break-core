@@ -1,0 +1,665 @@
+{
+  "catalogue": "Build & Break deployment roadmap",
+  "checked_at": "2026-10-04",
+  "entries": [
+    {
+      "id": "minecraft",
+      "name": "Minecraft Java Edition",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "implemented",
+      "template_id": "minecraft-java"
+    },
+    {
+      "id": "bedrock",
+      "name": "Minecraft Bedrock Edition",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "implemented",
+      "template_id": "minecraft-bedrock"
+    },
+    {
+      "id": "hytale",
+      "name": "Hytale",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "terraria",
+      "name": "Terraria",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "valheim",
+      "name": "Valheim",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "vintage-story",
+      "name": "Vintage Story",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "palworld",
+      "name": "Palworld",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "factorio",
+      "name": "Factorio",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "project-zomboid",
+      "name": "Project Zomboid",
+      "category": "game",
+      "target_memory_mb": 16384,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "counter-strike",
+      "name": "Counter Strike: GO",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "counter-strike-2",
+      "name": "Counter Strike 2",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "rust",
+      "name": "Rust",
+      "category": "game",
+      "target_memory_mb": 12288,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "redm",
+      "name": "Red Dead Redemption 2: RedM",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "mtasa",
+      "name": "GTA: Multi Theft Auto",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "samp",
+      "name": "GTA: San Andreas Multiplayer",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "fivem",
+      "name": "GTA: FiveM",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "enshrouded",
+      "name": "Enshrouded",
+      "category": "game",
+      "target_memory_mb": 16384,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "crewlink",
+      "name": "Crewlink: Among Us",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "dayz",
+      "name": "DayZ",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "skyrim",
+      "name": "Skyrim Together Reborn",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "operation-harsh-doorstop",
+      "name": "Operation: Harsh Doorstop",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "stormworks-build-and-rescue",
+      "name": "Stormworks: Build and Rescue",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "left-4-dead",
+      "name": "Left 4 Dead",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "starbound",
+      "name": "Starbound",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "satisfactory",
+      "name": "Satisfactory",
+      "category": "game",
+      "target_memory_mb": 12288,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "squad",
+      "name": "Squad",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "avorion",
+      "name": "Avorion",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "foundry",
+      "name": "Foundry",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "titanfall-2",
+      "name": "Titanfall 2 Northstar",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "core-keeper",
+      "name": "Core Keeper",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "team-fortress",
+      "name": "Team Fortress",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "the-forest",
+      "name": "The Forest",
+      "category": "game",
+      "target_memory_mb": 3072,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "icarus",
+      "name": "Icarus",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "scpsl",
+      "name": "SCP: Secret Laboratory",
+      "category": "game",
+      "target_memory_mb": 3096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "abiotic-factor",
+      "name": "Abiotic Factor",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "soul-mask",
+      "name": "Soulmask",
+      "category": "game",
+      "target_memory_mb": 8192,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "sons-of-the-forest",
+      "name": "Sons Of The Forest",
+      "category": "game",
+      "target_memory_mb": 12288,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "garrys-mod",
+      "name": "Garry's Mod",
+      "category": "game",
+      "target_memory_mb": 512,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "stardew-valley",
+      "name": "Stardew Valley",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "myth-of-empires",
+      "name": "Myth of Empires",
+      "category": "game",
+      "target_memory_mb": 18432,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "necesse",
+      "name": "Necesse",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "ark-survival-evolved",
+      "name": "ARK: Survival Evolved",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "ark-survival-ascended",
+      "name": "ARK: Survival Ascended",
+      "category": "game",
+      "target_memory_mb": 12288,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "mindustry",
+      "name": "Mindustry",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "assetto-corsa",
+      "name": "Assetto Corsa",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "arma3",
+      "name": "Arma 3",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "eco",
+      "name": "Eco",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "hurtworld",
+      "name": "Hurtworld",
+      "category": "game",
+      "target_memory_mb": 3072,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "7-days-to-die",
+      "name": "7 Days to Die",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "killing-floor",
+      "name": "Killing Floor",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "barotrauma",
+      "name": "Barotrauma",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "insurgency",
+      "name": "Insurgency",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "unturned",
+      "name": "Unturned",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "v-rising",
+      "name": "V Rising",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "dont-starve-together",
+      "name": "Don't Starve Together",
+      "category": "game",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "conan-exiles",
+      "name": "Conan Exiles Enhanced",
+      "category": "game",
+      "target_memory_mb": 8192,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "just-cause-3",
+      "name": "Just Cause 3",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "beammp",
+      "name": "BeamMP",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "pokemon-showdown",
+      "name": "Pokemon Showdown",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "astroneer",
+      "name": "Astroneer",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "dcs-world",
+      "name": "DCS World",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "citadel-forged-with-fire",
+      "name": "Citadel Forged With Fire",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "subnautica-nitrox",
+      "name": "Subnautica Nitrox",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "half-life-2",
+      "name": "Half Life 2 Synergy",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "scum",
+      "name": "Scum",
+      "category": "game",
+      "target_memory_mb": 12288,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "knockout-city",
+      "name": "Knockout City",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "spellbreak",
+      "name": "Spellbreak",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "space-station-14",
+      "name": "Space Station 14",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "rimworld",
+      "name": "Rimworld Together",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "foundryvtt",
+      "name": "Foundry Virtual Tabletop",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "nightingale",
+      "name": "Nightingale",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "vein",
+      "name": "Vein",
+      "category": "game",
+      "target_memory_mb": 12288,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "brickadia",
+      "name": "Brickadia",
+      "category": "game",
+      "target_memory_mb": 8192,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "star-rupture",
+      "name": "StarRupture",
+      "category": "game",
+      "target_memory_mb": 6144,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "windrose",
+      "name": "Windrose",
+      "category": "game",
+      "target_memory_mb": 8192,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "runescape-dragonwilds",
+      "name": "Runescape: Dragonwilds",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "plains-of-pain",
+      "name": "Plains of Pain",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "broke-protocol",
+      "name": "Broke Protocol",
+      "category": "game",
+      "target_memory_mb": 3072,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "stationeers",
+      "name": "Stationeers",
+      "category": "game",
+      "target_memory_mb": 4096,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "kingdoms-connected",
+      "name": "Kingdom Come: Deliverance II (Kingdoms Connected)",
+      "category": "game",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "discord-bot",
+      "name": "Discord Bot",
+      "category": "app",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "teamspeak",
+      "name": "Teamspeak",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "mumble",
+      "name": "Mumble",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "mysql",
+      "name": "MySQL",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "mariadb",
+      "name": "MariaDB",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "mongodb",
+      "name": "MongoDB",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "postgres",
+      "name": "Postgres",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "redis",
+      "name": "Redis",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "caddy",
+      "name": "Caddy",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "nginx",
+      "name": "Nginx",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "lavalink",
+      "name": "Lavalink",
+      "category": "app",
+      "target_memory_mb": 2048,
+      "implementation_status": "planned"
+    },
+    {
+      "id": "wordpress",
+      "name": "Wordpress",
+      "category": "app",
+      "target_memory_mb": 1024,
+      "implementation_status": "planned"
+    }
+  ],
+  "additional_targets": [
+    {
+      "id": "ubuntu-base",
+      "name": "Ubuntu base environment",
+      "implementation_status": "architecture decision pending"
+    },
+    {
+      "id": "alpine-test",
+      "name": "Alpine development workload",
+      "implementation_status": "implemented",
+      "template_id": "alpine-test"
+    }
+  ]
+}

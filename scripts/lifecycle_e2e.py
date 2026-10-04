@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 """Real local lifecycle test. Creates only its own allocation/service.
-No credentials are read and no pre-existing container is modified.
+Uses an operator-provided test admin account; no pre-existing container is modified.
 Requires Core and upgraded enrolled agent running on localhost.
 """
-import json, os, time, urllib.request, urllib.error, uuid
+import http.cookiejar, json, os, time, urllib.request, urllib.error, uuid
 BASE = os.environ.get('BNB_CORE_URL', 'http://127.0.0.1:8080') + '/api/v1'
 NODE = os.environ.get('BNB_NODE_ID', 'c6076de5-90d4-4842-b903-df48d453637c')
+OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+CSRF = None
+def authenticate():
+    global CSRF
+    email, password = os.environ.get('BNB_TEST_EMAIL'), os.environ.get('BNB_TEST_PASSWORD')
+    if not email or not password:
+        raise RuntimeError('Set BNB_TEST_EMAIL and BNB_TEST_PASSWORD to a registered test admin account')
+    req = urllib.request.Request(BASE + '/auth/login', data=json.dumps({'email':email,'password':password}).encode(), headers={'Content-Type':'application/json'})
+    with OPENER.open(req, timeout=15) as res:
+        session = json.load(res)
+    if session['user']['role'] != 'admin':
+        raise RuntimeError('Lifecycle and sandbox billing tests require a test admin account')
+    CSRF = session['csrf_token']
 def request(path, method='GET', body=None, expected=200, headers=None):
+    if CSRF is None: authenticate()
     data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(BASE + path, data=data, method=method, headers={'Content-Type': 'application/json', **(headers or {})})
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers={'Content-Type': 'application/json', 'X-CSRF-Token':CSRF, **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=15) as res:
+        with OPENER.open(req, timeout=15) as res:
             assert res.status == expected, (res.status, expected)
             return json.load(res)
     except urllib.error.HTTPError as err:
@@ -42,6 +56,9 @@ def main():
     request('/services/'+sid,'DELETE',expected=202);wait_service(sid,'deleted')
     jobs=request('/jobs?service_id='+sid);assert len(jobs)==5 and all(j['status']=='completed' for j in jobs)
     print('PASS delete: service tombstone and five completed jobs',flush=True)
+    request('/servers/'+server['id'],'DELETE')
+    assert all(s['id'] != server['id'] for s in request('/servers'))
+    print('PASS allocation archival: released only the test allocation budget',flush=True)
     print(json.dumps({'server_id':server['id'],'service_id':sid,'runtime_id':rid}),flush=True)
     # Allocation/job history remains available for audit. Delete only test-owned container through Core.
 if __name__=='__main__': main()

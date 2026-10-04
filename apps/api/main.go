@@ -1,7 +1,11 @@
 package main
 
 import (
+	"buildandbreak/platform/internal/accounts"
+	"buildandbreak/platform/internal/catalogue"
 	"buildandbreak/platform/internal/platform"
+	serviceStatus "buildandbreak/platform/internal/status"
+	"buildandbreak/platform/internal/support"
 	"context"
 	"encoding/json"
 	"log"
@@ -68,6 +72,26 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	statusHandler := &serviceStatus.Handler{DB: db, StartedAt: time.Now()}
+	mux.HandleFunc("GET /api/v1/status", statusHandler.Public)
+	webOrigins := os.Getenv("BNB_WEB_ORIGIN")
+	if webOrigins == "" {
+		webOrigins = "http://127.0.0.1:5173,http://localhost:5173"
+	}
+	accountHandler := &accounts.Handler{DB: db, SecureCookies: os.Getenv("BNB_SECURE_COOKIES") == "1" || os.Getenv("BNB_PAYMENT_MODE") == "live", AllowedOrigin: webOrigins}
+	mux.HandleFunc("GET /api/v1/auth/session", accountHandler.Me)
+	mux.HandleFunc("POST /api/v1/auth/register", accountHandler.Register)
+	mux.HandleFunc("POST /api/v1/auth/login", accountHandler.Login)
+	mux.HandleFunc("POST /api/v1/auth/logout", accountHandler.Protect(false, accountHandler.Logout))
+	mux.HandleFunc("GET /api/v1/locations", nodeHandler.Locations)
+	mux.HandleFunc("GET /api/v1/admin/accounts", accountHandler.Protect(true, accountHandler.List))
+	mux.HandleFunc("POST /api/v1/admin/incidents", accountHandler.Protect(true, statusHandler.Create))
+	mux.HandleFunc("PATCH /api/v1/admin/incidents/{incidentID}", accountHandler.Protect(true, statusHandler.Update))
+	supportHandler := &support.Handler{DB: db}
+	mux.HandleFunc("GET /api/v1/support/tickets", accountHandler.Protect(false, supportHandler.List))
+	mux.HandleFunc("POST /api/v1/support/tickets", accountHandler.Protect(false, supportHandler.Create))
+	mux.HandleFunc("GET /api/v1/support/tickets/{ticketID}", accountHandler.Protect(false, supportHandler.Read))
+	mux.HandleFunc("PATCH /api/v1/support/tickets/{ticketID}", accountHandler.Protect(false, supportHandler.Update))
 
 	// ---------------------------------------------------------
 	// Core
@@ -83,11 +107,16 @@ func main() {
 	// Nodes
 	// ---------------------------------------------------------
 
+	mux.HandleFunc("GET /api/v1/catalogue", catalogue.List)
+
 	// List nodes known to Core.
 	mux.HandleFunc(
 		"GET /api/v1/nodes",
-		nodeHandler.List,
+		accountHandler.Protect(true, nodeHandler.List),
 	)
+
+	mux.HandleFunc("PUT /api/v1/admin/nodes/{id}/address", accountHandler.Protect(true, nodeHandler.UpdateAddress))
+	mux.HandleFunc("POST /api/v1/admin/node-enrollment", accountHandler.Protect(true, nodeHandler.CreateEnrollment))
 
 	// One-time node enrollment.
 	//
@@ -135,24 +164,44 @@ func main() {
 	)
 
 	platformHandler := &platform.Handler{DB: db}
-	mux.HandleFunc("POST /api/v1/deployments", platformHandler.Deploy)
-	mux.HandleFunc("GET /api/v1/servers", platformHandler.Servers)
-	mux.HandleFunc("DELETE /api/v1/servers/{serverID}", platformHandler.DeleteServer)
-	mux.HandleFunc("POST /api/v1/servers", platformHandler.CreateServer)
-	mux.HandleFunc("GET /api/v1/services", platformHandler.Services)
-	mux.HandleFunc("POST /api/v1/services", platformHandler.CreateService)
-	mux.HandleFunc("POST /api/v1/services/{serviceID}/{action}", platformHandler.Action)
-	mux.HandleFunc("DELETE /api/v1/services/{serviceID}", platformHandler.Action)
+	mux.HandleFunc("POST /api/v1/deployments", accountHandler.Protect(true, platformHandler.Deploy))
+	mux.HandleFunc("GET /api/v1/servers", accountHandler.Protect(false, platformHandler.Servers))
+	mux.HandleFunc("DELETE /api/v1/servers/{serverID}", accountHandler.Protect(false, platformHandler.DeleteServer))
+	mux.HandleFunc("POST /api/v1/servers", accountHandler.Protect(true, platformHandler.CreateServer))
+	mux.HandleFunc("GET /api/v1/services", accountHandler.Protect(false, platformHandler.Services))
+	mux.HandleFunc("POST /api/v1/services", accountHandler.Protect(false, platformHandler.CreateService))
+	mux.HandleFunc("POST /api/v1/services/{serviceID}/{action}", accountHandler.Protect(false, platformHandler.Action))
+	mux.HandleFunc("GET /api/v1/services/{serviceID}/minecraft", accountHandler.Protect(false, platformHandler.Minecraft))
+	mux.HandleFunc("GET /api/v1/minecraft/releases", accountHandler.Protect(false, platformHandler.MinecraftReleases))
+	mux.HandleFunc("GET /api/v1/minecraft/paper-builds", accountHandler.Protect(false, platformHandler.PaperBuilds))
+	mux.HandleFunc("POST /api/v1/services/{serviceID}/minecraft/console", accountHandler.Protect(false, platformHandler.EnableConsole))
+	mux.HandleFunc("POST /api/v1/services/{serviceID}/minecraft/command", accountHandler.Protect(false, platformHandler.MinecraftCommand))
+	mux.HandleFunc("GET /api/v1/services/{serviceID}/minecraft/catalogue", accountHandler.Protect(false, platformHandler.MinecraftCatalogue))
+	mux.HandleFunc("PUT /api/v1/services/{serviceID}/minecraft", accountHandler.Protect(false, platformHandler.Minecraft))
+	mux.HandleFunc("DELETE /api/v1/services/{serviceID}", accountHandler.Protect(false, platformHandler.Action))
 	mux.HandleFunc("GET /api/v1/templates", platformHandler.Templates)
-	mux.HandleFunc("GET /api/v1/jobs", platformHandler.Jobs)
+	mux.HandleFunc("GET /api/v1/services/{serviceID}/bedrock/addons", accountHandler.Protect(false, platformHandler.BedrockAddons))
+	mux.HandleFunc("POST /api/v1/services/{serviceID}/bedrock/addons", accountHandler.Protect(false, platformHandler.BedrockAddons))
+	mux.HandleFunc("PUT /api/v1/services/{serviceID}/bedrock/addons/{addonID}", accountHandler.Protect(false, platformHandler.BedrockAddons))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/bedrock-artifacts/{artifactID}", platformHandler.BedrockArtifact)
+	mux.HandleFunc("POST /api/v1/services/{serviceID}/files", accountHandler.Protect(false, platformHandler.Files))
+	mux.HandleFunc("GET /api/v1/jobs/{jobID}", accountHandler.Protect(false, platformHandler.Operation))
+	mux.HandleFunc("GET /api/v1/jobs", accountHandler.Protect(false, platformHandler.Jobs))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/services", jobHandler.Inventory)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/services/observations", jobHandler.Observe)
 	billingHandler := &billing.Handler{DB: db, Sandbox: os.Getenv("BNB_BILLING_SANDBOX") == "1"}
+	billingHandler.Configure()
+	go billingHandler.RunFulfillment(ctx)
+	mux.HandleFunc("GET /api/v1/admin/plans", accountHandler.Protect(true, billingHandler.AdminPlans))
+	mux.HandleFunc("PUT /api/v1/admin/plans/{planID}", accountHandler.Protect(true, billingHandler.SavePlan))
 	mux.HandleFunc("GET /api/v1/billing/config", billingHandler.Config)
 	mux.HandleFunc("GET /api/v1/billing/plans", billingHandler.Plans)
-	mux.HandleFunc("GET /api/v1/billing/invoices", billingHandler.Invoices)
-	mux.HandleFunc("POST /api/v1/billing/orders", billingHandler.Order)
-	mux.HandleFunc("POST /api/v1/billing/invoices/{invoiceID}/pay-sandbox", billingHandler.PaySandbox)
+	mux.HandleFunc("GET /api/v1/billing/invoices", accountHandler.Protect(false, billingHandler.Invoices))
+	mux.HandleFunc("POST /api/v1/billing/orders", accountHandler.Protect(false, billingHandler.Order))
+	mux.HandleFunc("POST /api/v1/billing/invoices/{invoiceID}/pay-sandbox", accountHandler.Protect(true, billingHandler.PaySandbox))
+	mux.HandleFunc("POST /api/v1/billing/invoices/{invoiceID}/checkout", accountHandler.Protect(false, billingHandler.Checkout))
+	mux.HandleFunc("POST /api/v1/billing/invoices/{invoiceID}/capture-paypal", accountHandler.Protect(false, billingHandler.CapturePayPal))
+	mux.HandleFunc("POST /api/v1/billing/webhooks/{provider}", billingHandler.Webhook)
 	// The production build can be served by Core itself, on the same origin.
 	if _, err := os.Stat("apps/web/dist/index.html"); err == nil {
 		mux.Handle("/", http.FileServer(http.Dir("apps/web/dist")))
@@ -169,7 +218,7 @@ func main() {
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 

@@ -20,10 +20,13 @@ type assignment struct {
 	RuntimeName *string   `json:"runtime_name"`
 }
 type observation struct {
-	ServiceID string    `json:"service_id"`
-	RuntimeID string    `json:"runtime_id"`
-	Status    string    `json:"status"`
-	Revision  time.Time `json:"revision"`
+	Startup   *string             `json:"template_startup,omitempty"`
+	Metrics   *bnbruntime.Metrics `json:"metrics,omitempty"`
+	Console   *string             `json:"console,omitempty"`
+	ServiceID string              `json:"service_id"`
+	RuntimeID string              `json:"runtime_id"`
+	Status    string              `json:"status"`
+	Revision  time.Time           `json:"revision"`
 }
 
 func syncServices(ctx context.Context, config *AgentConfig, rt *bnbruntime.DockerRuntime) error {
@@ -68,10 +71,26 @@ func syncServices(ctx context.Context, config *AgentConfig, rt *bnbruntime.Docke
 		} else if a.RuntimeID == nil {
 			continue
 		}
-		observations = append(observations, observation{a.ID, rid, status, a.Revision})
+		var metrics *bnbruntime.Metrics
+		if status == "running" {
+			metrics, _ = rt.Metrics(ctx, rid, a.ServerID, a.ID)
+		}
+		var startup *string
+		if status == "running" || status == "stopped" {
+			if cmd, err := rt.DefaultStartup(ctx, rid, a.ServerID, a.ID); err == nil && cmd != "" {
+				startup = &cmd
+			}
+		}
+		var logs *string
+		if status == "running" || status == "stopped" {
+			if tail, err := rt.Logs(ctx, rid, a.ServerID, a.ID); err == nil {
+				logs = &tail
+			}
+		}
+		observations = append(observations, observation{Startup: startup, Metrics: metrics, Console: logs, ServiceID: a.ID, RuntimeID: rid, Status: status, Revision: a.Revision})
 	}
-	for start := 0; start < len(observations); start += 200 {
-		end := min(start+200, len(observations))
+	for start := 0; start < len(observations); start++ {
+		end := min(start+1, len(observations))
 		body, _ := json.Marshal(map[string]any{"services": observations[start:end]})
 		req, err = http.NewRequestWithContext(ctx, "POST", base+"/observations", bytes.NewReader(body))
 		if err != nil {

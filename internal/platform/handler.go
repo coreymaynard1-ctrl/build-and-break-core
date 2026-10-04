@@ -2,6 +2,7 @@
 package platform
 
 import (
+	"buildandbreak/platform/internal/accounts"
 	"buildandbreak/platform/internal/httpx"
 	"context"
 	"encoding/json"
@@ -14,7 +15,10 @@ import (
 	"strings"
 )
 
-type Handler struct{ DB *pgxpool.Pool }
+type Handler struct {
+	DB                    *pgxpool.Pool
+	MinecraftJavaResolver func(context.Context, string) (int, error)
+}
 type Template struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -23,7 +27,7 @@ type Template struct {
 	RequiresPort bool   `json:"requires_port"`
 }
 
-var templates = []Template{{"alpine-test", "Alpine development workload", 32, false, false}, {"minecraft-java", "Minecraft Java (Vanilla 1.21.1)", 1536, true, true}}
+var templates = []Template{{"alpine-test", "Alpine development workload", 32, false, false}, {"minecraft-java", "Minecraft Java", 1536, true, true}, {"minecraft-bedrock", "Minecraft Bedrock", 1024, true, true}}
 
 func (h *Handler) Templates(w http.ResponseWriter, r *http.Request) { httpx.JSON(w, 200, templates) }
 func (h *Handler) list(w http.ResponseWriter, r *http.Request, sql string, args ...any) {
@@ -49,7 +53,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, sql string, args 
 	httpx.JSON(w, 200, out)
 }
 func (h *Handler) Servers(w http.ResponseWriter, r *http.Request) {
-	h.list(w, r, `SELECT row_to_json(q) FROM (SELECT * FROM servers WHERE status!='deleted' ORDER BY created_at) q`)
+	h.list(w, r, `SELECT row_to_json(q) FROM (SELECT * FROM servers WHERE status!='deleted' AND ($1::uuid IS NULL OR account_id=$1) ORDER BY created_at) q`, accounts.Scope(r.Context()))
 }
 func (h *Handler) Services(w http.ResponseWriter, r *http.Request) {
 	serverID := r.URL.Query().Get("server_id")
@@ -57,7 +61,7 @@ func (h *Handler) Services(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, 400, "invalid server_id")
 		return
 	}
-	h.list(w, r, `SELECT row_to_json(q) FROM (SELECT s.*,v.node_id,CASE WHEN n.last_seen_at >= NOW()-INTERVAL '90 seconds' THEN 'online' ELSE 'offline' END AS node_status,(SELECT j.status FROM provisioning_jobs j WHERE j.service_id=s.id ORDER BY j.created_at DESC LIMIT 1) AS job_status FROM services s JOIN servers v ON v.id=s.server_id JOIN nodes n ON n.id=v.node_id WHERE ($1::uuid IS NULL OR s.server_id=$1) AND s.deleted_at IS NULL ORDER BY s.created_at) q`, nullableID(serverID))
+	h.list(w, r, `SELECT row_to_json(q) FROM (SELECT s.*,v.node_id,CASE WHEN n.last_seen_at >= NOW()-INTERVAL '90 seconds' THEN 'online' ELSE 'offline' END AS node_status,(SELECT j.status FROM provisioning_jobs j WHERE j.service_id=s.id ORDER BY j.created_at DESC LIMIT 1) AS job_status FROM services s JOIN servers v ON v.id=s.server_id JOIN nodes n ON n.id=v.node_id WHERE ($1::uuid IS NULL OR s.server_id=$1) AND ($2::uuid IS NULL OR v.account_id=$2) AND s.deleted_at IS NULL ORDER BY s.created_at) q`, nullableID(serverID), accounts.Scope(r.Context()))
 }
 func (h *Handler) Jobs(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("service_id")
@@ -65,7 +69,7 @@ func (h *Handler) Jobs(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, 400, "valid service_id is required")
 		return
 	}
-	h.list(w, r, `SELECT row_to_json(q) FROM (SELECT id,node_id,server_id,service_id,job_type,status,attempts,error_message,result,claimed_at,completed_at,created_at,updated_at FROM provisioning_jobs WHERE service_id=$1 ORDER BY created_at DESC LIMIT 50) q`, id)
+	h.list(w, r, `SELECT row_to_json(q) FROM (SELECT j.id,j.node_id,j.server_id,j.service_id,j.job_type,j.status,j.attempts,j.error_message,j.result,j.claimed_at,j.completed_at,j.created_at,j.updated_at FROM provisioning_jobs j JOIN servers v ON v.id=j.server_id WHERE j.service_id=$1 AND ($2::uuid IS NULL OR v.account_id=$2) ORDER BY j.created_at DESC LIMIT 50) q`, id, accounts.Scope(r.Context()))
 }
 func nullableID(id string) any {
 	if id == "" {
@@ -130,7 +134,7 @@ func (h *Handler) CreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
-	err = tx.QueryRow(r.Context(), `INSERT INTO servers(id,node_id,name,status,memory_mb,disk_mb,cpu_threads) VALUES(gen_random_uuid(),$1,$2,'active',$3,$4,$5) RETURNING id`, req.NodeID, req.Name, req.MemoryMB, req.DiskMB, req.CPUThreads).Scan(&id)
+	err = tx.QueryRow(r.Context(), `INSERT INTO servers(id,node_id,name,status,memory_mb,disk_mb,cpu_threads,account_id) VALUES(gen_random_uuid(),$1,$2,'active',$3,$4,$5,$6) RETURNING id`, req.NodeID, req.Name, req.MemoryMB, req.DiskMB, req.CPUThreads, accounts.Owner(r.Context())).Scan(&id)
 	if err != nil || tx.Commit(r.Context()) != nil {
 		httpx.Error(w, 500, "failed to create allocation")
 		return
@@ -161,6 +165,10 @@ func validateService(req CreateServiceRequest) error {
 		if req.MemoryMB < 1536 || req.Port < 1024 || req.Port > 65535 || !req.AcceptEULA {
 			return fmt.Errorf("Minecraft requires at least 1536 MiB, a port from 1024 to 65535, and explicit EULA acceptance")
 		}
+	case "minecraft-bedrock":
+		if req.MemoryMB < 1024 || req.Port < 1024 || req.Port > 65519 || !req.AcceptEULA {
+			return fmt.Errorf("Bedrock requires 1024 MiB, an allocated UDP port and EULA acceptance")
+		}
 	default:
 		return fmt.Errorf("unknown template")
 	}
@@ -185,7 +193,7 @@ func (h *Handler) CreateService(w http.ResponseWriter, r *http.Request) {
 	var nodeID string
 	var mem, cpu int
 	var online bool
-	err = tx.QueryRow(r.Context(), `SELECT v.node_id,v.memory_mb,v.cpu_threads,COALESCE(n.last_seen_at>=NOW()-INTERVAL '90 seconds' AND n.runtime_available,false) FROM servers v JOIN nodes n ON n.id=v.node_id WHERE v.id=$1 AND v.status='active' FOR UPDATE OF v`, req.ServerID).Scan(&nodeID, &mem, &cpu, &online)
+	err = tx.QueryRow(r.Context(), `SELECT v.node_id,v.memory_mb,v.cpu_threads,COALESCE(n.last_seen_at>=NOW()-INTERVAL '90 seconds' AND n.runtime_available,false) FROM servers v JOIN nodes n ON n.id=v.node_id WHERE v.id=$1 AND v.status='active' AND ($2::uuid IS NULL OR v.account_id=$2) FOR UPDATE OF v`, req.ServerID, accounts.Scope(r.Context())).Scan(&nodeID, &mem, &cpu, &online)
 	if errors.Is(err, pgx.ErrNoRows) {
 		httpx.Error(w, 404, "active server not found")
 		return
@@ -227,6 +235,10 @@ func (h *Handler) CreateService(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	payload := WorkloadPayload(id, req.Template, req.MemoryMB, req.CPUThreads, req.Port)
+	if err = reserveExtraPorts(r.Context(), tx, nodeID, id, payload); err != nil {
+		httpx.Error(w, 409, err.Error())
+		return
+	}
 	jobID, err := enqueue(r.Context(), tx, nodeID, req.ServerID, id, "create_container", payload)
 	if err != nil || tx.Commit(r.Context()) != nil {
 		httpx.Error(w, 500, "failed to enqueue provisioning")
@@ -274,7 +286,7 @@ func (h *Handler) Action(w http.ResponseWriter, r *http.Request) {
 	var serverID, nodeID, status string
 	var runtimeID *string
 	var online bool
-	err = tx.QueryRow(r.Context(), `SELECT s.server_id,v.node_id,s.runtime_id,s.status,COALESCE(n.last_seen_at>=NOW()-INTERVAL '90 seconds' AND n.runtime_available,false) FROM services s JOIN servers v ON v.id=s.server_id JOIN nodes n ON n.id=v.node_id WHERE s.id=$1 AND s.deleted_at IS NULL FOR UPDATE OF s`, id).Scan(&serverID, &nodeID, &runtimeID, &status, &online)
+	err = tx.QueryRow(r.Context(), `SELECT s.server_id,v.node_id,s.runtime_id,s.status,COALESCE(n.last_seen_at>=NOW()-INTERVAL '90 seconds' AND n.runtime_available,false) FROM services s JOIN servers v ON v.id=s.server_id JOIN nodes n ON n.id=v.node_id WHERE s.id=$1 AND s.deleted_at IS NULL AND ($2::uuid IS NULL OR v.account_id=$2) FOR UPDATE OF s`, id, accounts.Scope(r.Context())).Scan(&serverID, &nodeID, &runtimeID, &status, &online)
 	if errors.Is(err, pgx.ErrNoRows) {
 		httpx.Error(w, 404, "service not found")
 		return
@@ -304,12 +316,22 @@ func (h *Handler) Action(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var payload []byte
-		err = tx.QueryRow(r.Context(), `SELECT payload FROM provisioning_jobs WHERE service_id=$1 AND job_type='create_container' ORDER BY created_at DESC LIMIT 1`, id).Scan(&payload)
+		var retryKind string
+		err = tx.QueryRow(r.Context(), `SELECT payload,job_type FROM provisioning_jobs WHERE service_id=$1 AND job_type IN ('create_container','configure_minecraft') ORDER BY created_at DESC LIMIT 1`, id).Scan(&payload, &retryKind)
 		if err != nil {
 			httpx.Error(w, 409, "no provisioning request available to retry")
 			return
 		}
-		jobID, err = enqueue(r.Context(), tx, nodeID, serverID, id, "create_container", json.RawMessage(payload))
+		if retryKind == "configure_minecraft" && runtimeID != nil {
+			var p map[string]any
+			if json.Unmarshal(payload, &p) != nil {
+				httpx.Error(w, 409, "invalid configuration retry payload")
+				return
+			}
+			p["runtime_id"] = *runtimeID
+			payload, _ = json.Marshal(p)
+		}
+		jobID, err = enqueue(r.Context(), tx, nodeID, serverID, id, retryKind, json.RawMessage(payload))
 	} else {
 		jobID, err = enqueue(r.Context(), tx, nodeID, serverID, id, action+"_service", map[string]string{"runtime_id": *runtimeID})
 	}
@@ -385,7 +407,7 @@ func (h *Handler) DeleteServer(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var status string
-	err = tx.QueryRow(r.Context(), `SELECT status FROM servers WHERE id=$1 FOR UPDATE`, id).Scan(&status)
+	err = tx.QueryRow(r.Context(), `SELECT status FROM servers WHERE id=$1 AND ($2::uuid IS NULL OR account_id=$2) FOR UPDATE`, id, accounts.Scope(r.Context())).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		httpx.Error(w, 404, "server not found")
 		return

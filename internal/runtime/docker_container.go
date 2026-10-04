@@ -45,9 +45,28 @@ func (d *DockerRuntime) CreateContainer(
 	}
 
 	if spec.Port != 0 {
-		port := network.MustParsePort("25565/tcp")
+		internalPort := spec.ContainerPort
+		if internalPort == 0 {
+			internalPort = 25565
+		}
+		protocol := spec.PortProtocol
+		if protocol == "" {
+			protocol = "tcp"
+		}
+		port := network.MustParsePort(strconv.Itoa(internalPort) + "/" + protocol)
 		config.ExposedPorts = network.PortSet{port: struct{}{}}
 		hostConfig.PortBindings = network.PortMap{port: []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(spec.Port)}}}
+	}
+	for _, binding := range spec.ExtraPorts {
+		port := network.MustParsePort(strconv.Itoa(binding.ContainerPort) + "/" + binding.Protocol)
+		if config.ExposedPorts == nil {
+			config.ExposedPorts = network.PortSet{}
+		}
+		if hostConfig.PortBindings == nil {
+			hostConfig.PortBindings = network.PortMap{}
+		}
+		config.ExposedPorts[port] = struct{}{}
+		hostConfig.PortBindings[port] = []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(binding.HostPort)}}
 	}
 	if spec.VolumeName != "" {
 		hostConfig.Mounts = []mount.Mount{{Type: mount.TypeVolume, Source: spec.VolumeName, Target: "/data"}}
@@ -120,6 +139,23 @@ func validateContainerSpec(spec ContainerSpec) error {
 		)
 	}
 
+	if len(spec.ExtraPorts) > 32 {
+		return fmt.Errorf("too many extra ports")
+	}
+	seen := map[string]bool{}
+	for _, p := range spec.ExtraPorts {
+		key := strconv.Itoa(p.HostPort) + "/" + p.Protocol
+		if p.HostPort < 1024 || p.HostPort > 65535 || p.ContainerPort < 1024 || p.ContainerPort > 65535 || (p.Protocol != "tcp" && p.Protocol != "udp") || seen[key] {
+			return fmt.Errorf("invalid extra port binding")
+		}
+		seen[key] = true
+	}
+	if spec.PortProtocol != "" && spec.PortProtocol != "tcp" && spec.PortProtocol != "udp" {
+		return fmt.Errorf("invalid port protocol")
+	}
+	if spec.ContainerPort != 0 && (spec.ContainerPort < 1024 || spec.ContainerPort > 65535) {
+		return fmt.Errorf("invalid container port")
+	}
 	if spec.Port != 0 && (spec.Port < 1024 || spec.Port > 65535) {
 		return fmt.Errorf("invalid service port")
 	}
@@ -181,6 +217,7 @@ func (d *DockerRuntime) InspectContainer(
 		Image:     inspected.Config.Image,
 		ServerID:  inspected.Config.Labels[ServerIDLabel],
 		ServiceID: inspected.Config.Labels[ServiceIDLabel],
+		JobID:     inspected.Config.Labels[JobIDLabel],
 	}
 
 	if inspected.State != nil {

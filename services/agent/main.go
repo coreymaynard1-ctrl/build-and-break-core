@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -26,8 +27,8 @@ type SystemInfo struct {
 	OS               string `json:"os"`
 	Architecture     string `json:"architecture"`
 	CPUThreads       int    `json:"cpu_threads"`
-	TotalMemoryBytes uint64 `json:"total_memory_bytes"`
-	TotalDiskBytes   uint64 `json:"total_disk_bytes"`
+	TotalMemoryBytes uint64 `json:"total_memory"`
+	TotalDiskBytes   uint64 `json:"total_disk"`
 }
 
 type HealthResponse struct {
@@ -46,12 +47,12 @@ type EnrollRequest struct {
 	Hostname         string `json:"hostname"`
 	Location         string `json:"location"`
 	CPUThreads       int    `json:"cpu_threads"`
-	TotalMemoryBytes uint64 `json:"total_memory_bytes"`
-	TotalDiskBytes   uint64 `json:"total_disk_bytes"`
+	TotalMemoryBytes uint64 `json:"total_memory"`
+	TotalDiskBytes   uint64 `json:"total_disk"`
 }
 
 type EnrollResponse struct {
-	NodeID    string `json:"node_id"`
+	NodeID    string `json:"id"`
 	NodeToken string `json:"node_token"`
 }
 
@@ -163,6 +164,9 @@ func readTotalDisk(path string) (uint64, error) {
 }
 
 func configPath() (string, error) {
+	if path := os.Getenv("BNB_AGENT_CONFIG"); path != "" {
+		return filepath.Abs(path)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf(
@@ -679,7 +683,7 @@ func runAgent() error {
 	)
 
 	server := &http.Server{
-		Addr:         "127.0.0.1:9090",
+		Addr:         agentAddress(),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -762,15 +766,55 @@ func generateRandomToken(
 	return string(result), nil
 }
 
-func main() {
-	if len(os.Args) > 1 &&
-		os.Args[1] == "enroll" {
-
-		log.Fatal(
-			"This agent is already designed to use the existing enrollment workflow. Use the established enrollment command/config rather than re-enrolling this node.",
-		)
+func agentAddress() string {
+	if addr := os.Getenv("BNB_AGENT_ADDR"); addr != "" {
+		return addr
 	}
+	return "127.0.0.1:9090"
+}
 
+func enrollCommand(args []string) error {
+	flags := flag.NewFlagSet("enroll", flag.ContinueOnError)
+	core := flags.String("core", "", "Core URL")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *core == "" || flags.NArg() != 0 {
+		return fmt.Errorf("usage: bnb-agent enroll --core https://your-core; set BNB_ENROLLMENT_TOKEN privately")
+	}
+	path, err := configPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("agent configuration already exists; enrollment refused")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	token := os.Getenv("BNB_ENROLLMENT_TOKEN")
+	if token == "" {
+		return fmt.Errorf("BNB_ENROLLMENT_TOKEN is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	config, err := enroll(ctx, *core, token, "", "")
+	if err != nil {
+		return err
+	}
+	log.Printf("Enrolled node %s; credential stored privately", config.NodeID)
+	return nil
+}
+
+func main() {
+	if len(os.Args) > 1 {
+		if os.Args[1] != "enroll" {
+			log.Fatal("unknown agent command")
+		}
+		if err := enrollCommand(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := runAgent(); err != nil {
 		log.Fatal(err)
 	}

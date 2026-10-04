@@ -84,7 +84,7 @@ func TestOrderPaymentIdempotencyAndFulfillment(t *testing.T) {
 	}
 	var memory int
 	var payload []byte
-	if db.QueryRow(ctx, `SELECT memory_mb FROM servers WHERE id=$1`, paid["server_id"]).Scan(&memory) != nil || memory != 128 {
+	if db.QueryRow(ctx, `SELECT memory_mb FROM servers WHERE id=$1`, paid["server_id"]).Scan(&memory) != nil || memory != 4096 {
 		t.Fatal("wrong entitlement")
 	}
 	if db.QueryRow(ctx, `SELECT payload FROM provisioning_jobs WHERE id=$1`, paid["job_id"]).Scan(&payload) != nil {

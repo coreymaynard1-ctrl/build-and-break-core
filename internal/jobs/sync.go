@@ -2,6 +2,9 @@ package jobs
 
 import (
 	"buildandbreak/platform/internal/httpx"
+	"buildandbreak/platform/internal/runtime"
+	"encoding/json"
+	"math"
 	"net/http"
 	"time"
 )
@@ -42,10 +45,13 @@ func (h *Handler) Inventory(w http.ResponseWriter, r *http.Request) {
 }
 
 type Observation struct {
-	ServiceID string    `json:"service_id"`
-	RuntimeID string    `json:"runtime_id"`
-	Status    string    `json:"status"`
-	Revision  time.Time `json:"revision"`
+	Startup   *string          `json:"template_startup,omitempty"`
+	Metrics   *runtime.Metrics `json:"metrics,omitempty"`
+	Console   *string          `json:"console,omitempty"`
+	ServiceID string           `json:"service_id"`
+	RuntimeID string           `json:"runtime_id"`
+	Status    string           `json:"status"`
+	Revision  time.Time        `json:"revision"`
 }
 
 func (h *Handler) Observe(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +69,11 @@ func (h *Handler) Observe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, s := range req.Services {
-		if s.Revision.IsZero() || !httpx.UUID(s.ServiceID) || s.RuntimeID == "" || len(s.RuntimeID) > 128 || (s.Status != "running" && s.Status != "stopped" && s.Status != "missing" && s.Status != "unknown") {
+		if s.Metrics != nil && (math.IsNaN(s.Metrics.CPUPercent) || math.IsInf(s.Metrics.CPUPercent, 0) || s.Metrics.CPUPercent < 0 || s.Metrics.CPUPercent > 100000) {
+			httpx.Error(w, 400, "invalid runtime metrics")
+			return
+		}
+		if (s.Startup != nil && len(*s.Startup) > 8192) || (s.Console != nil && len(*s.Console) > 12288) || s.Revision.IsZero() || !httpx.UUID(s.ServiceID) || s.RuntimeID == "" || len(s.RuntimeID) > 128 || (s.Status != "running" && s.Status != "stopped" && s.Status != "missing" && s.Status != "unknown") {
 			httpx.Error(w, 400, "invalid observation")
 			return
 		}
@@ -103,8 +113,13 @@ func (h *Handler) Observe(w http.ResponseWriter, r *http.Request) {
 		if active {
 			continue
 		}
+		var metrics any
+		if s.Metrics != nil {
+			b, _ := json.Marshal(s.Metrics)
+			metrics = b
+		}
 		// Failed jobs remain visible until an explicit lifecycle action succeeds.
-		_, err = tx.Exec(r.Context(), `UPDATE services SET runtime_id=$2,observed_status=$3,observed_at=NOW(),status=CASE WHEN error_message IS NULL THEN $3 ELSE status END,updated_at=NOW() WHERE id=$1`, s.ServiceID, s.RuntimeID, s.Status)
+		_, err = tx.Exec(r.Context(), `UPDATE services SET runtime_id=$2,observed_status=$3,observed_at=NOW(),status=CASE WHEN error_message IS NULL THEN $3 ELSE status END,runtime_metrics=CASE WHEN $3='stopped' THEN NULL ELSE COALESCE($5,runtime_metrics) END,template_startup=COALESCE($6,template_startup),console_tail=COALESCE($4,console_tail),console_updated_at=CASE WHEN $4::text IS NULL THEN console_updated_at ELSE NOW() END,updated_at=NOW() WHERE id=$1`, s.ServiceID, s.RuntimeID, s.Status, s.Console, metrics, s.Startup)
 		if err != nil {
 			httpx.Error(w, 500, "failed to record observation")
 			return

@@ -33,6 +33,9 @@ func TestLifecycleRefusesWrongAllocation(t *testing.T) {
 		rt := &DockerRuntime{client: cli}
 		ctx := context.Background()
 		for _, call := range []func() error{
+			func() error { return rt.InstallStartupRunner(ctx, "test", "server", "service") },
+			func() error { _, err := rt.Logs(ctx, "test", "server", "service"); return err },
+			func() error { return rt.MinecraftCommand(ctx, "test", "server", "service", "say test") },
 			func() error { return rt.StartContainer(ctx, "test", "server", "service") },
 			func() error { return rt.StopContainer(ctx, "test", "server", "service") },
 			func() error { return rt.DeleteContainer(ctx, "test", "server", "service") },

@@ -12,9 +12,11 @@ import (
 	"time"
 
 	bnbruntime "buildandbreak/platform/internal/runtime"
+	"buildandbreak/platform/internal/serverfs"
 )
 
 type ProvisioningJob struct {
+	Data          string          `json:"-"`
 	ID            string          `json:"id"`
 	NodeID        string          `json:"node_id"`
 	ServerID      *string         `json:"server_id"`
@@ -34,6 +36,7 @@ type JobClaimResponse struct {
 }
 
 type JobResultRequest struct {
+	Data          string `json:"data,omitempty"`
 	Status        string `json:"status"`
 	ErrorMessage  string `json:"error_message,omitempty"`
 	RuntimeID     string `json:"runtime_id,omitempty"`
@@ -47,14 +50,19 @@ type JobResultRequest struct {
 // Build & Break decides which Docker capabilities customers are
 // eventually allowed to use.
 type CreateContainerPayload struct {
-	Name           string   `json:"name"`
-	Image          string   `json:"image"`
-	MemoryBytes    int64    `json:"memory_bytes"`
-	CPUThreads     int      `json:"cpu_threads"`
-	Environment    []string `json:"environment,omitempty"`
-	Command        []string `json:"command,omitempty"`
-	Port           int      `json:"port,omitempty"`
-	PersistentData bool     `json:"persistent_data,omitempty"`
+	ExtraPorts     []bnbruntime.PortBinding `json:"extra_ports,omitempty"`
+	ContainerPort  int                      `json:"container_port,omitempty"`
+	PortProtocol   string                   `json:"port_protocol,omitempty"`
+	StartupRunner  bool                     `json:"startup_runner,omitempty"`
+	RuntimeID      string                   `json:"runtime_id,omitempty"`
+	Name           string                   `json:"name"`
+	Image          string                   `json:"image"`
+	MemoryBytes    int64                    `json:"memory_bytes"`
+	CPUThreads     int                      `json:"cpu_threads"`
+	Environment    []string                 `json:"environment,omitempty"`
+	Command        []string                 `json:"command,omitempty"`
+	Port           int                      `json:"port,omitempty"`
+	PersistentData bool                     `json:"persistent_data,omitempty"`
 }
 
 func claimJob(
@@ -135,6 +143,7 @@ func sendJobResult(
 	status string,
 	errorMessage string,
 	runtimeID, serviceStatus string,
+	data ...string,
 ) error {
 	result := JobResultRequest{
 		Status:        status,
@@ -143,6 +152,9 @@ func sendJobResult(
 		ServiceStatus: serviceStatus,
 	}
 
+	if len(data) > 0 {
+		result.Data = data[0]
+	}
 	body, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf(
@@ -297,11 +309,12 @@ func executeCreateContainerJob(
 		Image:       payload.Image,
 		ServerID:    *job.ServerID,
 		ServiceID:   *job.ServiceID,
+		JobID:       job.ID,
 		MemoryBytes: payload.MemoryBytes,
 		CPUThreads:  payload.CPUThreads,
 		Environment: payload.Environment,
 		Command:     payload.Command,
-		Port:        payload.Port,
+		ExtraPorts:  payload.ExtraPorts, Port: payload.Port, ContainerPort: payload.ContainerPort, PortProtocol: payload.PortProtocol,
 	}
 
 	if payload.PersistentData {
@@ -316,6 +329,22 @@ func executeCreateContainerJob(
 	)
 
 	containerState, err := dockerRuntime.InspectOwned(ctx, spec.Name, spec.ServerID, spec.ServiceID)
+	if job.JobType == "configure_minecraft" {
+		if payload.RuntimeID == "" {
+			return fmt.Errorf("configuration job requires original runtime identity")
+		}
+		if err == nil && containerState.ID == payload.RuntimeID {
+			if err = dockerRuntime.StopContainer(ctx, containerState.ID, spec.ServerID, spec.ServiceID); err != nil {
+				return err
+			}
+			if err = dockerRuntime.DeleteContainer(ctx, containerState.ID, spec.ServerID, spec.ServiceID); err != nil {
+				return err
+			}
+			containerState, err = dockerRuntime.InspectOwned(ctx, spec.Name, spec.ServerID, spec.ServiceID)
+		} else if err == nil && containerState.JobID != job.ID {
+			return fmt.Errorf("replacement runtime does not belong to this configuration job")
+		}
+	}
 	if bnbruntime.IsNotFound(err) {
 		containerState, err = dockerRuntime.CreateContainer(ctx, spec)
 	}
@@ -326,6 +355,11 @@ func executeCreateContainerJob(
 		)
 	}
 
+	if payload.StartupRunner {
+		if err := dockerRuntime.InstallStartupRunner(ctx, containerState.ID, *job.ServerID, *job.ServiceID); err != nil {
+			return fmt.Errorf("install startup launcher: %w", err)
+		}
+	}
 	job.RuntimeID = containerState.ID
 	log.Printf(
 		"Container created: id=%s",
@@ -359,6 +393,7 @@ func executeCreateContainerJob(
 
 func executeJob(
 	ctx context.Context,
+	config *AgentConfig,
 	dockerRuntime *bnbruntime.DockerRuntime,
 	job *ProvisioningJob,
 ) error {
@@ -372,13 +407,43 @@ func executeJob(
 
 		return nil
 
-	case "create_container":
+	case "create_container", "configure_minecraft":
 		return executeCreateContainerJob(
 			ctx,
 			dockerRuntime,
 			job,
 		)
 
+	case "install_bedrock_addons", "configure_bedrock_addons":
+		return executeBedrockAddonJob(ctx, config, dockerRuntime, job)
+	case "server_files":
+		if job.ServerID == nil || job.ServiceID == nil {
+			return fmt.Errorf("file job requires service identity")
+		}
+		var p struct {
+			RuntimeID string           `json:"runtime_id"`
+			Request   serverfs.Request `json:"request"`
+		}
+		if json.Unmarshal(job.Payload, &p) != nil {
+			return fmt.Errorf("invalid file job")
+		}
+		data, err := dockerRuntime.FileOperation(ctx, p.RuntimeID, *job.ServerID, *job.ServiceID, job.ID, p.Request)
+		if err == nil {
+			job.Data = data
+		}
+		return err
+	case "minecraft_command":
+		if job.ServerID == nil || job.ServiceID == nil {
+			return fmt.Errorf("command requires allocation identity")
+		}
+		var payload struct {
+			RuntimeID string `json:"runtime_id"`
+			Command   string `json:"command"`
+		}
+		if json.Unmarshal(job.Payload, &payload) != nil {
+			return fmt.Errorf("invalid command payload")
+		}
+		return dockerRuntime.MinecraftCommand(ctx, payload.RuntimeID, *job.ServerID, *job.ServiceID, payload.Command)
 	case "start_service", "stop_service", "restart_service", "delete_service":
 		return executeLifecycleJob(ctx, dockerRuntime, job)
 	default:
@@ -404,6 +469,7 @@ func processJob(
 
 	err := executeJob(
 		ctx,
+		config,
 		dockerRuntime,
 		job,
 	)
@@ -421,7 +487,7 @@ func processJob(
 			job.ID,
 			"failed",
 			err.Error(),
-			job.RuntimeID, job.ServiceStatus,
+			job.RuntimeID, job.ServiceStatus, job.Data,
 		); reportErr != nil {
 
 			log.Printf(
@@ -440,7 +506,7 @@ func processJob(
 		job.ID,
 		"completed",
 		"",
-		job.RuntimeID, job.ServiceStatus,
+		job.RuntimeID, job.ServiceStatus, job.Data,
 	); err != nil {
 
 		log.Printf(
@@ -490,7 +556,7 @@ func jobPollingLoop(
 
 	poll()
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -556,10 +622,10 @@ func executeLifecycleJob(ctx context.Context, rt *bnbruntime.DockerRuntime, job 
 	return nil
 }
 
-func reportJobResult(ctx context.Context, config *AgentConfig, jobID, status, message, runtimeID, serviceStatus string) error {
+func reportJobResult(ctx context.Context, config *AgentConfig, jobID, status, message, runtimeID, serviceStatus string, data ...string) error {
 	var err error
 	for attempt := 0; attempt < 5; attempt++ {
-		err = sendJobResult(ctx, config, jobID, status, message, runtimeID, serviceStatus)
+		err = sendJobResult(ctx, config, jobID, status, message, runtimeID, serviceStatus, data...)
 		if err == nil {
 			return nil
 		}

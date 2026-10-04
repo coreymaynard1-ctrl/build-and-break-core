@@ -10,6 +10,7 @@ import (
 )
 
 type ResultRequest struct {
+	Data          string `json:"data,omitempty"`
 	Status        string `json:"status"`
 	ErrorMessage  string `json:"error_message,omitempty"`
 	RuntimeID     string `json:"runtime_id,omitempty"`
@@ -31,6 +32,10 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Status != "completed" && req.Status != "failed" {
 		httpx.Error(w, 400, "status must be completed or failed")
+		return
+	}
+	if len(req.Data) > 49152 || (req.Data != "" && !json.Valid([]byte(req.Data))) {
+		httpx.Error(w, 400, "invalid file result")
 		return
 	}
 	if len(req.RuntimeID) > 128 || len(req.ErrorMessage) > 4096 {
@@ -64,7 +69,7 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, 409, "job is not processing or result differs")
 		return
 	}
-	managed := kind == "create_container" || kind == "start_service" || kind == "stop_service" || kind == "restart_service" || kind == "delete_service"
+	managed := kind == "install_bedrock_addons" || kind == "configure_bedrock_addons" || kind == "configure_minecraft" || kind == "create_container" || kind == "start_service" || kind == "stop_service" || kind == "restart_service" || kind == "delete_service"
 	if managed {
 		if serviceID == nil || serverID == nil {
 			httpx.Error(w, 409, "job has no allocation identity")
@@ -80,13 +85,20 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, 409, "service allocation does not match job")
 			return
 		}
-		if kind != "create_container" && (runtimeID == nil || (req.RuntimeID != "" && req.RuntimeID != *runtimeID)) {
+		if kind != "create_container" && kind != "configure_minecraft" && (runtimeID == nil || (req.RuntimeID != "" && req.RuntimeID != *runtimeID)) {
 			httpx.Error(w, 409, "runtime identity does not match service")
 			return
 		}
 		if kind == "create_container" && runtimeID != nil && req.RuntimeID != "" && *runtimeID != req.RuntimeID {
 			httpx.Error(w, 409, "service already has a different runtime")
 			return
+		}
+		if kind == "configure_minecraft" {
+			var expected string
+			if tx.QueryRow(r.Context(), `SELECT payload->>'runtime_id' FROM provisioning_jobs WHERE id=$1`, jobID).Scan(&expected) != nil || runtimeID == nil || *runtimeID != expected {
+				httpx.Error(w, 409, "original runtime identity does not match configuration job")
+				return
+			}
 		}
 		next := req.ServiceStatus
 		if req.Status == "failed" {
@@ -100,6 +112,12 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 			rid = nil
 		}
 		_, err = tx.Exec(r.Context(), `UPDATE services SET runtime_id=$2,status=$3,error_message=$4,observed_status=CASE WHEN $5='completed' THEN $3 ELSE observed_status END,observed_at=CASE WHEN $5='completed' THEN NOW() ELSE observed_at END,deleted_at=CASE WHEN $3='deleted' THEN NOW() ELSE deleted_at END,updated_at=NOW() WHERE id=$1`, *serviceID, rid, next, nullableError(req.Status, req.ErrorMessage), req.Status)
+		if err == nil && (kind == "create_container" || kind == "configure_minecraft") && req.Status == "completed" {
+			_, err = tx.Exec(r.Context(), `UPDATE services SET console_input_enabled=COALESCE((SELECT payload->'environment' @> '["CREATE_CONSOLE_IN_PIPE=true"]'::jsonb FROM provisioning_jobs WHERE id=$2),false) WHERE id=$1`, *serviceID, jobID)
+		}
+		if err == nil && (kind == "configure_minecraft" || kind == "create_container") && req.Status == "completed" {
+			_, err = tx.Exec(r.Context(), `UPDATE services SET minecraft_applied_config=(SELECT payload->'minecraft_config' FROM provisioning_jobs WHERE id=$2) WHERE id=$1`, *serviceID, jobID)
+		}
 		if err == nil && next == "deleted" {
 			_, err = tx.Exec(r.Context(), `DELETE FROM service_ports WHERE service_id=$1`, *serviceID)
 		}
@@ -110,6 +128,17 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := json.Marshal(req)
 	_, err = tx.Exec(r.Context(), `UPDATE provisioning_jobs SET status=$2,error_message=$3,result=$4,completed_at=NOW(),updated_at=NOW() WHERE id=$1`, jobID, req.Status, nullableError(req.Status, req.ErrorMessage), body)
+	if err == nil && serviceID != nil && (kind == "install_bedrock_addons" || kind == "configure_bedrock_addons") {
+		if kind == "install_bedrock_addons" {
+			state := "error"
+			if req.Status == "completed" {
+				state = "installed"
+			}
+			_, err = tx.Exec(r.Context(), `UPDATE bedrock_addons SET state=$2 WHERE service_id=$1 AND artifact_id=(SELECT (payload->>'artifact_id')::uuid FROM provisioning_jobs WHERE id=$3)`, *serviceID, state, jobID)
+		} else if req.Status == "completed" {
+			_, err = tx.Exec(r.Context(), `UPDATE bedrock_addons SET applied_enabled=enabled WHERE service_id=$1`, *serviceID)
+		}
+	}
 	if err != nil || tx.Commit(r.Context()) != nil {
 		httpx.Error(w, 500, "failed to commit result")
 		return

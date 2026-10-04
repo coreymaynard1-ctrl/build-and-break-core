@@ -1,6 +1,7 @@
 # Secrets / env configs
 .env
 .env.*
+!.env.example
 
 # Logs / client servs
 *.log

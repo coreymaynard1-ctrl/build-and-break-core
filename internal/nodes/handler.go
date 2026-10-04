@@ -13,6 +13,7 @@ type Handler struct {
 }
 
 type Node struct {
+	PublicAddress       string     `json:"public_address"`
 	RuntimeAvailable    bool       `json:"runtime_available"`
 	RuntimeName         *string    `json:"runtime_name"`
 	RuntimeVersion      *string    `json:"runtime_version"`
@@ -54,7 +55,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			last_seen_at,
 			created_at,
 			updated_at,
- runtime_available,runtime_name,runtime_version,
+ runtime_available,runtime_name,runtime_version,public_address,
  (SELECT COALESCE(SUM(memory_mb),0) FROM servers WHERE node_id=nodes.id AND status!='deleted'),
  (SELECT COALESCE(SUM(cpu_threads),0) FROM servers WHERE node_id=nodes.id AND status!='deleted')
 		FROM nodes
@@ -89,7 +90,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			&node.LastSeenAt,
 			&node.CreatedAt,
 			&node.UpdatedAt,
-			&node.RuntimeAvailable, &node.RuntimeName, &node.RuntimeVersion, &node.AllocatedMemoryMB, &node.AllocatedCPUThreads,
+			&node.RuntimeAvailable, &node.RuntimeName, &node.RuntimeVersion, &node.PublicAddress, &node.AllocatedMemoryMB, &node.AllocatedCPUThreads,
 		)
 
 		if err != nil {

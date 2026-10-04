@@ -1,0 +1,1 @@
+ALTER TABLE nodes ADD COLUMN public_address TEXT NOT NULL DEFAULT '';
